@@ -99,6 +99,57 @@ def valid_aba(value: str) -> bool:
     return total % 10 == 0
 
 
+# ---------------------------------------------------------------------------
+# Payment cards
+# ---------------------------------------------------------------------------
+# Presidio ships a credit-card recognizer for English, Spanish, Italian and Polish
+# only. In Russian — and in every other language — a card number passed through
+# untouched while the default policy claimed to block it. Detecting cards here makes
+# it language-independent, and dependency-free, which the pattern-only tier needs.
+CARD_RE = re.compile(r"(?<![0-9A-Za-z])(?:\d[ -]?){12,18}\d(?![0-9A-Za-z])")
+
+# Issuer identification numbers, as (prefix, accepted lengths). Luhn alone passes one
+# random number in ten; requiring a real issuer prefix is what makes this usable.
+_IIN_RULES: tuple[tuple[str, tuple[int, ...]], ...] = (
+    ("4", (13, 16, 19)),                                   # Visa
+    *((str(p), (16,)) for p in range(51, 56)),             # Mastercard
+    *((str(p), (16,)) for p in range(2221, 2721)),         # Mastercard (2-series)
+    ("34", (15,)), ("37", (15,)),                          # American Express
+    ("6011", (16, 19)), ("65", (16, 19)),                  # Discover
+    *((str(p), (16, 19)) for p in range(644, 650)),        # Discover
+    *((str(p), (16,)) for p in range(2200, 2205)),         # Mir
+    ("62", (16, 17, 18, 19)),                              # UnionPay
+    *((str(p), (16, 17, 18, 19)) for p in range(3528, 3590)),   # JCB
+    ("36", (14, 15, 16, 17, 18, 19)),                      # Diners
+    *((str(p), (14,)) for p in range(300, 306)),           # Diners
+)
+
+
+def luhn_ok(digits: str) -> bool:
+    total = 0
+    for i, ch in enumerate(reversed(digits)):
+        d = int(ch)
+        if i % 2:
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+    return total % 10 == 0
+
+
+def valid_card(digits: str) -> bool:
+    """Luhn plus a recognized issuer prefix of the right length for that issuer."""
+    if not digits.isdigit() or not 13 <= len(digits) <= 19:
+        return False
+    if len(set(digits)) == 1:
+        return False
+    if not any(
+        digits.startswith(prefix) and len(digits) in lengths for prefix, lengths in _IIN_RULES
+    ):
+        return False
+    return luhn_ok(digits)
+
+
 def lei_check_digits(prefix18: str) -> str:
     """Two ISO 7064 MOD 97-10 check digits for an 18-character LEI prefix.
 
@@ -141,6 +192,12 @@ def scan(text: str, *, entities: set[str] | None = None) -> list[Finding]:
             Finding(entity=entity, start=start, end=end, score=score, action=Action.MASK,
                     recognizer=f"finance:{entity.lower()}")
         )
+
+    if wanted("CREDIT_CARD"):
+        for m in CARD_RE.finditer(text):
+            digits = re.sub(r"[ -]", "", m.group(0))
+            if valid_card(digits):
+                claim("CREDIT_CARD", *m.span(), 0.95)
 
     if wanted("LEI"):
         for m in LEI_RE.finditer(text):

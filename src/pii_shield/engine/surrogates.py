@@ -58,7 +58,7 @@ _PHONE_ENTITIES = frozenset({
 # instruction carrying a malformed BIC or an IBAN that fails its check digits is not
 # anonymized data, it is corrupted data — the recipient's own validation rejects it,
 # and the failure looks like a bug rather than a policy.
-_FINANCE_ENTITIES = frozenset({"SWIFT_BIC", "IBAN_CODE", "ABA_ROUTING", "LEI"})
+_FINANCE_ENTITIES = frozenset({"SWIFT_BIC", "IBAN_CODE", "ABA_ROUTING", "LEI", "CREDIT_CARD"})
 
 def _ru_inn(f) -> str:
     from .ru_patterns import make_inn
@@ -82,7 +82,7 @@ _RU_CODE_BUILDERS = {"RU_INN": _ru_inn, "RU_OGRN": _ru_ogrn, "RU_BIK": _ru_bik}
 
 # Entities with no sensible human-readable stand-in get a typed token instead.
 _TOKEN_ENTITIES = frozenset({
-    "RU_SNILS", "RU_PASSPORT", "RU_BANK_ACCOUNT", "CREDIT_CARD", "DATE_TIME",
+    "RU_SNILS", "RU_PASSPORT", "RU_BANK_ACCOUNT", "DATE_TIME",
 })
 
 
@@ -229,6 +229,10 @@ class SurrogateFactory:
                 return f.iban()
             if entity == "ABA_ROUTING":
                 return f.aba()
+            if entity == "CREDIT_CARD":
+                # Luhn-valid by construction, like every other financial stand-in
+                # here: a card field holding a malformed number is corrupted data.
+                return f.credit_card_number()
             if entity == "LEI":
                 return self._make_lei(f)
             if entity in _RU_CODE_BUILDERS:

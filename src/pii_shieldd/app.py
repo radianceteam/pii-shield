@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from pii_shield import BlockedError, Policy, RedactionUnavailableError, Shield
 from pii_shield.engine.presidio_engine import NerUnavailableError
@@ -63,9 +63,20 @@ AuthDep = Annotated[None, Depends(require_token)]
 # Wire types
 # ---------------------------------------------------------------------------
 class AnonymizeRequest(BaseModel):
+    # Unknown fields are rejected rather than ignored. A request sending {"language":
+    # "en"} against a model that had no such field was silently served in the server's
+    # own language: names came back untouched with a 200, which reads as "clean".
+    model_config = ConfigDict(extra="forbid")
+
     text: str
     session_id: str | None = Field(
         default=None, description="Continue an existing session to keep surrogates stable"
+    )
+    language: str | None = Field(
+        default=None, description="Language of this text; overrides the server default"
+    )
+    surrogate_language: str | None = Field(
+        default=None, description="Language the stand-ins are drawn from"
     )
     policy: dict | None = Field(
         default=None,
@@ -86,9 +97,13 @@ class AnonymizeRequest(BaseModel):
 
         Passing ``rules`` explicitly still replaces them, including with ``[]``.
         """
-        if self.policy is None:
+        overrides = dict(self.policy or {})
+        if self.language is not None:
+            overrides["language"] = self.language
+        if self.surrogate_language is not None:
+            overrides["surrogate_language"] = self.surrogate_language
+        if not overrides:
             return None
-        overrides = dict(self.policy)
         language = overrides.pop("language", default.language)
         base = Policy.for_language(language)
         if "rules" not in overrides:
@@ -111,6 +126,12 @@ class AnonymizeResponse(BaseModel):
     text: str
     session_id: str
     findings: list[FindingOut]
+    names_analyzed: bool = Field(
+        description=(
+            "False when no language model ran: people, organizations and places were "
+            "not looked for. Everything with a checksum or a fixed shape still was."
+        )
+    )
 
 
 class DeanonymizeRequest(BaseModel):
@@ -166,11 +187,22 @@ def create_app(shield: Shield | None = None, proxy_config=None) -> FastAPI:
                 req.text, session_id=req.session_id, policy=req.resolved_policy(sh.policy)
             )
         except BlockedError as exc:
-            # 422, not 400: the request is well-formed, its content is not permitted.
-            # Only entity *kinds* cross the wire — never the offending value.
+            # Same envelope and status as the proxy. They used to differ — the proxy
+            # answered 400 with an OpenAI-shaped error while this endpoint answered 422
+            # with a different body — so a client written against the documented shape
+            # simply did not catch it.
+            kinds = sorted({f.entity for f in exc.findings})
             raise HTTPException(
-                status_code=422,
-                detail={"detail": "blocked", "entities": sorted({f.entity for f in exc.findings})},
+                status_code=400,
+                detail={
+                    "error": {
+                        "message": f"pii-shield blocked this request: {', '.join(kinds)}",
+                        "type": "pii_shield_blocked",
+                        "param": None,
+                        "code": "blocked",
+                        "entities": kinds,
+                    }
+                },
             ) from exc
         except (RedactionUnavailableError, NerUnavailableError) as exc:
             # Fail closed: the caller must not fall back to sending raw text.
@@ -178,6 +210,7 @@ def create_app(shield: Shield | None = None, proxy_config=None) -> FastAPI:
         return AnonymizeResponse(
             text=result.text,
             session_id=result.session_id,
+            names_analyzed=result.names_analyzed,
             findings=[
                 FindingOut(
                     entity=f.entity, start=f.start, end=f.end,

@@ -61,12 +61,18 @@ def test_session_continuation_keeps_surrogates_stable(client):
     assert first["text"].split("ИНН ")[1] in second["text"]
 
 
-def test_blocked_returns_422_with_kinds_not_values(client):
+def test_blocked_uses_the_documented_envelope(client):
+    """One contract for both endpoints.
+
+    The proxy answered 400 with an OpenAI-shaped error while this endpoint answered
+    422 with a different body, so a client written against the README did not catch it.
+    """
     secret = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-    resp = client.post("/v1/anonymize", json={"text": f"ключ {secret}"})
-    assert resp.status_code == 422
-    detail = resp.json()["detail"]
-    assert detail["entities"] == ["SECRET_API_KEY"]
+    resp = client.post("/v1/anonymize", json={"text": f"key {secret}"})
+    assert resp.status_code == 400
+    error = resp.json()["detail"]["error"]
+    assert error["type"] == "pii_shield_blocked"
+    assert error["entities"] == ["SECRET_API_KEY"]
     assert secret not in resp.text
 
 
@@ -135,8 +141,8 @@ def test_partial_policy_keeps_the_protective_defaults(client):
     resp = client.post("/v1/anonymize", json={
         "text": "SSN 521-42-8888", "policy": {"language": "en"},
     })
-    assert resp.status_code == 422
-    assert resp.json()["detail"]["entities"] == ["US_SSN"]
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["error"]["entities"] == ["US_SSN"]
 
 
 def test_explicit_empty_rules_still_disarms(client):
@@ -153,3 +159,47 @@ def test_partial_policy_overrides_what_it_names(client):
     })
     assert resp.status_code == 200
     assert "7707083893" not in resp.json()["text"]
+
+
+# --- an unconfigured language must not answer 200 ---------------------------
+def test_unknown_field_is_rejected_not_ignored(client):
+    """Reported live: {"language": "en"} against a model without that field was
+    silently served in the server's own language, and names came back untouched
+    with a 200 — which reads as "clean"."""
+    resp = client.post("/v1/anonymize", json={"text": "hi", "langauge": "en"})
+    assert resp.status_code == 422
+
+
+def test_language_field_is_honoured(client):
+    """The same request now actually selects the language."""
+    resp = client.post("/v1/anonymize", json={"text": "ИНН 7707083893", "language": "ru"})
+    assert resp.status_code == 200
+    assert "7707083893" not in resp.json()["text"]
+
+
+def test_language_without_a_pipeline_refuses_when_names_are_wanted(pattern_policy):
+    """Fails closed rather than returning the text unexamined with a 200."""
+    from fastapi.testclient import TestClient
+
+    from pii_shield import Policy, Shield
+    from pii_shieldd.app import create_app
+
+    with TestClient(create_app(Shield(Policy.pattern_only("ru"), use_faker=False))) as c:
+        resp = c.post("/v1/anonymize", json={
+            "text": "Please call John Smith at Microsoft",
+            "policy": {"language": "mk"},          # no pipeline installed for this
+        })
+        assert resp.status_code == 503
+        assert "John Smith" not in resp.text
+
+
+def test_response_says_when_names_were_not_analyzed():
+    from fastapi.testclient import TestClient
+
+    from pii_shield import Policy, Shield
+    from pii_shieldd.app import create_app
+
+    with TestClient(create_app(Shield(Policy.pattern_only("ru"), use_faker=False))) as c:
+        body = c.post("/v1/anonymize", json={"text": "ИНН 7707083893"}).json()
+        assert body["names_analyzed"] is False
+        assert "7707083893" not in body["text"]

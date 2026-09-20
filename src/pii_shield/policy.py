@@ -19,23 +19,16 @@ from pydantic import BaseModel, Field, model_validator
 from .languages import (
     FINANCE_ENTITIES,
     GLOBAL_NER_ENTITIES,
+    LOCAL_ENTITIES,
+    NER_MODEL_ENTITIES,
+    PRESIDIO_ENTITIES,
+    SECRET_ENTITIES,
     SUPPORTED_LANGUAGES,
     UnsupportedLanguageError,
     all_national_entities,
     get_profile,
 )
 from .types import Action
-
-# Credential shapes. Orthogonal to identity and to language: Presidio does not look
-# for these, and they arrive through source files and tool output, not prose.
-SECRET_ENTITIES = (
-    "SECRET_API_KEY",
-    "SECRET_JWT",
-    "SECRET_PRIVATE_KEY",
-    "SECRET_AUTH_HEADER",
-    "SECRET_CONNECTION_STRING",
-    "SECRET_URL_CREDENTIAL",
-)
 
 GLOBAL_ENTITIES = GLOBAL_NER_ENTITIES
 ALL_ENTITIES = GLOBAL_ENTITIES + FINANCE_ENTITIES + all_national_entities() + SECRET_ENTITIES
@@ -223,6 +216,70 @@ class Policy(BaseModel):
         tokens = [t.strip(_TOKEN_TRIM) for t in probe.split()]
         tokens = [t for t in tokens if t]
         return bool(tokens) and all(t.casefold() in allowed for t in tokens)
+
+    # -- what this policy actually costs to run ----------------------------
+    @property
+    def active_entities(self) -> frozenset[str]:
+        """Entities this policy will actually change.
+
+        ALLOW entities are excluded: detecting one and then leaving it alone produces
+        the same text as not detecting it, so a policy that allows every name needs no
+        language model. Span precedence does not depend on them either — the ordering
+        in :meth:`Shield._ner_priority` already ranks ALLOW last.
+        """
+        if self.scope is Scope.OFF:
+            return frozenset()
+        return frozenset(
+            e for e in (self.entities or []) if self.action_for(e) is not Action.ALLOW
+        )
+
+    def requires_ner(self) -> bool:
+        """True if this policy cannot be honoured without a spaCy language model.
+
+        Only the four entities the NER component produces need one. A policy built
+        from checksummed identifiers and credential shapes needs no model at all, and
+        demanding one made the documented pattern-only deployment impossible to build
+        — the difference between a 40 MB process and a 1 GB one.
+        """
+        return bool(self.active_entities & NER_MODEL_ENTITIES)
+
+    def requires_presidio(self) -> bool:
+        """True if this policy needs ``presidio-analyzer`` installed.
+
+        Presidio's pattern and checksum recognizers (email, cards, IBAN, IP, URL and
+        the national ones it ships) run on a blank pipeline, so this can be true while
+        :meth:`requires_ner` is false.
+        """
+        return bool(self.active_entities & (PRESIDIO_ENTITIES | NER_MODEL_ENTITIES))
+
+    @property
+    def local_only(self) -> bool:
+        """True if every active entity is served by this project's own patterns."""
+        active = self.active_entities
+        return bool(active) and active <= LOCAL_ENTITIES
+
+    @classmethod
+    def pattern_only(cls, language: str = "ru") -> Policy:
+        """A policy that needs neither Presidio nor a language model.
+
+        Everything with a checksum or a fixed shape — national identifiers, banking
+        codes, credentials. Names and organizations are not detected, and a caller
+        showing this to end users should say so.
+        """
+        profile = get_profile(language)
+        entities = [e for e in cls.catalogue_for(language) if e in LOCAL_ENTITIES]
+        blocked = sorted(set(profile.national_entities) & HIGH_RISK_NATIONAL & LOCAL_ENTITIES)
+        return cls(
+            language=language,
+            entities=entities,
+            rules=[
+                *(
+                    EntityRule(entity=e, action=Action.BLOCK, threshold=0.4)
+                    for e in SECRET_ENTITIES
+                ),
+                *(EntityRule(entity=e, action=Action.BLOCK, threshold=0.4) for e in blocked),
+            ],
+        )
 
     @property
     def blocking_entities(self) -> frozenset[str]:

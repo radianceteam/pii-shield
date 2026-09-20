@@ -184,9 +184,33 @@ would make it an anonymization oracle for the whole network.
 
 Measured on a server: **1.1 GB resident with one language loaded, 1.6 GB with two**. Pipelines load on demand, so a request naming a language that is in the image but not yet loaded will raise this further — the compose default of 3 GB covers two comfortably.
 
-Without the `ner` extra the package still detects everything with a checksum or a fixed
-shape; it just cannot find names. That is a supported configuration, not a degraded one —
-but see *Fails closed* below for how it refuses to pretend otherwise.
+### Two tiers
+
+What a policy costs depends on what it asks for, and the entities fall into three groups
+with three very different footprints:
+
+| Tier | Entities | Needs |
+|---|---|---|
+| Own patterns | national identifiers (INN, SNILS, OGRN, BIK, 身份证, マイナンバー, 주민등록번호), banking codes (SWIFT/BIC, ABA, LEI), **payment cards**, credentials | nothing — regex and checksums |
+| Presidio recognizers | email, phone, IBAN, IP, URL, dates, and the national IDs Presidio ships for en/es/it/pl | `pii-shield[ner]`, but **no language model**: a blank pipeline is enough |
+| Language model | PERSON, ORGANIZATION, LOCATION, NRP | a spaCy pipeline, ~1 GB resident |
+
+```python
+Policy.pattern_only("ru")     # tier 1 only: ~40 MB resident, starts instantly
+Policy.for_language("ru")     # everything, including names
+
+policy.requires_ner()         # True only if PERSON/ORGANIZATION/LOCATION/NRP are active
+policy.requires_presidio()    # True if any Presidio recognizer is needed
+```
+
+A pattern-only deployment is a real configuration, not a degraded one — it fits in a
+container sized for the agent rather than for a language model. What it cannot do is find
+names, and it says so: every result carries `names_analyzed`, which is `False` when no
+model ran. A caller showing this to end users should repeat that distinction rather than
+implying the text was fully examined.
+
+A policy that *does* ask for names and has no pipeline still refuses to construct. That
+guarantee is the point of the whole design and is not weakened by the tiers.
 
 ## Use
 
@@ -260,6 +284,7 @@ checksum validation:
 | `IBAN_CODE` | Presidio's IBAN recognizer |
 | `ABA_ROUTING` | Federal Reserve prefix range, plus the 3-7-1 weighted mod-10 check |
 | `LEI` | ISO 17442 (ISO 7064 MOD 97-10) checksum |
+| `CREDIT_CARD` | Luhn plus a real issuer prefix — Presidio recognizes cards in four languages only, so a card used to pass straight through Russian text |
 
 **The stand-ins are themselves valid.** A real BIC becomes another well-formed BIC with the
 right country code for the locale, an IBAN becomes an IBAN that passes its check digits, an
@@ -316,11 +341,20 @@ pii-shieldd --port 8099          # binds 127.0.0.1 by default
 ```
 
 ```
-POST /v1/anonymize      {text, session_id?, policy?}  → {text, session_id, findings[]}
+POST /v1/anonymize      {text, session_id?, language?, surrogate_language?, policy?}
+                        → {text, session_id, findings[], names_analyzed}
 POST /v1/deanonymize    {text, session_id, consume?}  → {text}
 DELETE /v1/session/{id}
 GET  /healthz
 ```
+
+`language` selects the language for that request; a language with no pipeline installed
+**fails closed** rather than answering 200 with the text unexamined. Unknown fields are
+rejected rather than ignored, so a misspelled one is a 422 and not a silent default.
+
+`policy` carries overrides only: anything omitted keeps the language preset's value, so
+`{"language": "en"}` means "the usual policy, in English" rather than "a policy with no
+rules". Pass `rules` explicitly — including `[]` — to replace them.
 
 A blocked payload returns **422** with the entity *kinds* only. A detection failure returns
 **503**. Both mean: do not send the original text. See [`examples/client.mjs`](examples/client.mjs).
@@ -371,7 +405,17 @@ chunked.
 credential and this proxy should never need to hold it. The sidecar's own gate is a
 separate header, `X-Pii-Shield-Token`.
 
-A blocked request returns **400** in OpenAI's error envelope and is never forwarded.
+A blocked request returns **400** in OpenAI's error envelope and is never forwarded. The
+sidecar's `/v1/anonymize` uses the same status and the same envelope, so one handler
+covers both:
+
+```json
+{"error": {"message": "pii-shield blocked this request: SECRET_API_KEY",
+           "type": "pii_shield_blocked", "code": "blocked",
+           "entities": ["SECRET_API_KEY"]}}
+```
+
+Only entity *kinds* cross the wire, never the offending value.
 
 **Serving several languages from one deployment.** The proxy reads the language its
 deployment was configured with, which is wrong for a platform whose users write in

@@ -73,3 +73,13 @@ class _NoNer:
 
     def detect(self, text, entities, threshold):
         return []
+
+
+def test_card_surrogate_is_a_valid_card():
+    """Same rule as the other financial codes: a malformed stand-in is corrupted data."""
+    from pii_shield.engine.finance_patterns import valid_card
+
+    factory = SurrogateFactory(seed="s", locale="ru_RU")
+    for _ in range(10):
+        card = factory.make("CREDIT_CARD", "4111111111111111")
+        assert valid_card(card.replace(" ", "").replace("-", "")), card

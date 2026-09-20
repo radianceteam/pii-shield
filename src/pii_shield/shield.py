@@ -28,6 +28,8 @@ from .types import (
     RedactionUnavailableError,
 )
 
+_MISSING = object()
+
 
 class Shield:
     """Detects and replaces sensitive spans, and restores them on the way back."""
@@ -62,9 +64,10 @@ class Shield:
         scrubbed. That silent downgrade is worse than a failed startup, so under
         ``fail_closed`` it is fatal here rather than invisible later.
         """
-        wanted_ner = {e for e in (self.policy.entities or []) if e in NER_ENTITIES}
-        wanted_ner -= {e for e in wanted_ner if self.policy.action_for(e) is Action.ALLOW}
-        if not wanted_ner or self.policy.scope is Scope.OFF:
+        if not self.policy.requires_presidio():
+            # Nothing but this project's own patterns and checksums. No Presidio, no
+            # language model, no load at all — this is the configuration that fits in
+            # a container sized for the agent rather than for a language model.
             return
         # Warm explicitly rather than through ``detector_for``: that method returns a
         # cached entry untouched, and an injected detector is already cached, so the
@@ -92,16 +95,30 @@ class Shield:
     def detector_for(self, language: str, pol: Policy | None = None):
         """Return (building if needed) the detector for *language*.
 
-        Raises :class:`NerUnavailableError` under ``fail_closed`` when that language
-        has no pipeline, rather than returning None and scanning nothing.
+        A policy that does not ask for names is served by a blank pipeline, which
+        needs no language model. One that does ask for them requires a real pipeline,
+        and its absence raises under ``fail_closed`` rather than returning None and
+        quietly scanning nothing.
         """
-        if language in self._detectors:
-            return self._detectors[language]
-        detector = PresidioDetector(language)
+        policy = pol or self.policy
+        require_ner = policy.requires_ner()
+
+        cached = self._detectors.get(language, _MISSING)
+        if cached is not _MISSING:
+            # A blank detector cached for a cheaper policy must not silently serve a
+            # request that needs names; rebuild instead of under-detecting.
+            if cached is None or not require_ner or getattr(cached, "ner_available", True):
+                if cached is None and require_ner and policy.fail_closed:
+                    raise NerUnavailableError(
+                        f"no spaCy pipeline loadable for language {language!r}"
+                    )
+                return cached
+
+        detector = PresidioDetector(language, allow_blank=not require_ner)
         try:
             detector.warm()
         except NerUnavailableError:
-            if (pol or self.policy).fail_closed:
+            if policy.fail_closed:
                 raise
             detector = None
         self._detectors[language] = detector
@@ -131,7 +148,7 @@ class Shield:
         secret_spans = secrets_layer.scan(text, entities=wanted) if pol.secrets else []
         national_spans = national_scan(pol.language, text, wanted)
         finance_spans = finance_patterns.scan(text, entities=wanted)
-        detector = self.detector_for(pol.language, pol)
+        detector = self.detector_for(pol.language, pol) if pol.requires_presidio() else None
         ner_spans: list[Finding] = []
         if detector is not None and wanted & self._ner_scope(detector):
             # The analyzer must be asked for the LOWEST threshold any rule uses, not
@@ -194,6 +211,14 @@ class Shield:
         return pol.is_allowlisted(span)
 
     # -- anonymize ----------------------------------------------------------
+    def names_analyzed(self, policy: Policy | None = None) -> bool:
+        """Whether a model capable of finding names is available for this policy."""
+        pol = policy or self.policy
+        if not pol.requires_ner():
+            return False
+        detector = self._detectors.get(pol.language)
+        return bool(detector is not None and getattr(detector, "ner_available", True))
+
     def anonymize(
         self,
         text: str,
@@ -209,7 +234,9 @@ class Shield:
         """
         pol = policy or self.policy
         if pol.scope is Scope.OFF or not text:
-            return AnonymizeResult(text=text, session_id=session_id or "", findings=[])
+            return AnonymizeResult(
+                text=text, session_id=session_id or "", findings=[], names_analyzed=False
+            )
 
         try:
             findings = self.detect(text, pol)
@@ -218,7 +245,10 @@ class Shield:
                 raise RedactionUnavailableError(
                     f"detection failed, refusing to emit unfiltered text: {exc}"
                 ) from exc
-            return AnonymizeResult(text=text, session_id=session_id or "", findings=[])
+            return AnonymizeResult(
+                text=text, session_id=session_id or "", findings=[],
+                names_analyzed=self.names_analyzed(pol),
+            )
 
         # Resolve each span to the action the policy actually mandates.
         resolved = [f.model_copy(update={"action": pol.action_for(f.entity)}) for f in findings]
@@ -229,7 +259,10 @@ class Shield:
 
         replaceable = [f for f in resolved if f.action is not Action.ALLOW]
         if not replaceable:
-            return AnonymizeResult(text=text, session_id=session_id or "", findings=resolved)
+            return AnonymizeResult(
+                text=text, session_id=session_id or "", findings=resolved,
+                names_analyzed=self.names_analyzed(pol),
+            )
 
         sid = session_id or self.store.new_session()
         factory = SurrogateFactory(
@@ -244,7 +277,10 @@ class Shield:
             replacement = self._replacement(finding, original, sid, factory)
             out = out[: finding.start] + replacement + out[finding.end :]
 
-        return AnonymizeResult(text=out, session_id=sid, findings=resolved)
+        return AnonymizeResult(
+            text=out, session_id=sid, findings=resolved,
+            names_analyzed=self.names_analyzed(pol),
+        )
 
     def _replacement(
         self, finding: Finding, original: str, session_id: str, factory: SurrogateFactory

@@ -74,6 +74,15 @@ class AnonymizeResult(BaseModel):
     text: str = Field(description="Text safe to send outbound")
     session_id: str = Field(description="Handle for deanonymize(); empty if nothing reversible")
     findings: list[Finding] = Field(default_factory=list)
+    names_analyzed: bool = Field(
+        default=True,
+        description=(
+            "False when no language model ran, so people, organizations and places "
+            "were not looked for. Everything with a checksum or a fixed shape still "
+            "was. A caller that hides this from its users is telling them the text is "
+            "clean when only half of it was examined."
+        ),
+    )
 
     @property
     def changed(self) -> bool:

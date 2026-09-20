@@ -115,9 +115,49 @@ GLOBAL_NER_ENTITIES = (
     "CREDIT_CARD", "IBAN_CODE", "IP_ADDRESS", "URL", "DATE_TIME", "NRP",
 )
 
+# ---------------------------------------------------------------------------
+# What each entity actually costs
+# ---------------------------------------------------------------------------
+# Three tiers, because they have three different dependency footprints and a
+# deployment may be able to afford only the cheapest. Conflating them meant a policy
+# asking for nothing but checksummed identifiers still demanded a 500 MB language
+# model, which made the documented pattern-only configuration impossible to build.
+#
+# 1. NER_MODEL_ENTITIES — produced by the spaCy pipeline's named-entity recognizer.
+#    These are the only ones that need a language model, and they are the only ones
+#    whose absence must be fatal when a policy asks for them.
+NER_MODEL_ENTITIES = frozenset({"PERSON", "ORGANIZATION", "LOCATION", "NRP"})
+
+# 2. Presidio's pattern, checksum and context recognizers. They need
+#    ``presidio-analyzer`` installed, but no language model: a blank spaCy pipeline
+#    (a few megabytes, shipped with spaCy itself) is enough to run them.
+PRESIDIO_PATTERN_ENTITIES = frozenset(
+    {"EMAIL_ADDRESS", "PHONE_NUMBER", "IBAN_CODE", "IP_ADDRESS", "URL", "DATE_TIME"}
+)
+
+# 3. Everything else is this project's own regex and checksum layers, which need
+#    neither Presidio nor spaCy. Computed below, once the national tables exist.
+
 # Institution and legal-entity identifier codes. Language-independent, so they are
 # available everywhere rather than living in a national profile.
 FINANCE_ENTITIES = ("SWIFT_BIC", "IBAN_CODE", "ABA_ROUTING", "LEI")
+
+# Of those, IBAN is Presidio's recognizer; the other three are this project's own.
+# CREDIT_CARD is here rather than in the Presidio tier because Presidio only
+# recognizes it in four languages, and a card must not depend on the language it
+# was written next to.
+LOCAL_FINANCE_ENTITIES = ("SWIFT_BIC", "ABA_ROUTING", "LEI", "CREDIT_CARD")
+
+# Credential shapes, detected by this project's own patterns. Language-independent
+# and dependency-free, which is what makes a credentials-only deployment possible.
+SECRET_ENTITIES = (
+    "SECRET_API_KEY",
+    "SECRET_JWT",
+    "SECRET_PRIVATE_KEY",
+    "SECRET_AUTH_HEADER",
+    "SECRET_CONNECTION_STRING",
+    "SECRET_URL_CREDENTIAL",
+)
 
 
 @dataclass(frozen=True)
@@ -203,6 +243,28 @@ def get_profile(code: str) -> LanguageProfile:
             f"unsupported language {code!r}; supported: {', '.join(SUPPORTED_LANGUAGES)}"
         )
     return profile
+
+
+def _presidio_entities() -> frozenset[str]:
+    """Tier 2, including the national recognizers Presidio ships for en/es/it/pl."""
+    out = set(PRESIDIO_PATTERN_ENTITIES)
+    for national in PRESIDIO_NATIONAL.values():
+        out |= set(national)
+    return frozenset(out)
+
+
+PRESIDIO_ENTITIES = _presidio_entities()
+
+
+def _local_entities() -> frozenset[str]:
+    """Tier 3: detected by this project's own patterns, no third-party dependency."""
+    out = set(LOCAL_FINANCE_ENTITIES) | set(SECRET_ENTITIES)
+    for national in LOCAL_NATIONAL.values():
+        out |= set(national)
+    return frozenset(out)
+
+
+LOCAL_ENTITIES = _local_entities()
 
 
 def all_national_entities() -> tuple[str, ...]:

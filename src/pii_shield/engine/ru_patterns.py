@@ -102,8 +102,13 @@ def make_bik(body7: str) -> str:
 # ---------------------------------------------------------------------------
 # Digit runs are captured with boundaries that reject a longer number, so a 20-digit
 # account is never reported as the 13-digit OGRN hiding inside it.
-_B = r"(?<![0-9])"
-_E = r"(?![0-9])"
+#
+# The boundary excludes letters as well as digits. A German IBAN, DE89370400440532013000,
+# carries exactly twenty digits after its country code, and a digits-only boundary read
+# that as a Russian bank account — which the default policy blocks, so a perfectly
+# ordinary European payment was refused outright.
+_B = r"(?<![0-9A-Za-z])"
+_E = r"(?![0-9A-Za-z])"
 
 INN_RE = re.compile(rf"{_B}(\d{{12}}|\d{{10}}){_E}")
 SNILS_RE = re.compile(rf"{_B}(\d{{3}})[\s-]?(\d{{3}})[\s-]?(\d{{3}})[\s-]?(\d{{2}}){_E}")

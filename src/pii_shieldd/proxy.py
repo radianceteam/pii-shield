@@ -58,12 +58,18 @@ class ProxyConfig:
         )
 
 
-def _error(status: int, message: str, err_type: str, code: str) -> JSONResponse:
-    """OpenAI's error envelope, so an unmodified client renders it instead of crashing."""
-    return JSONResponse(
-        status_code=status,
-        content={"error": {"message": message, "type": err_type, "param": None, "code": code}},
-    )
+def _error(
+    status: int, message: str, err_type: str, code: str, entities: list[str] | None = None
+) -> JSONResponse:
+    """OpenAI's error envelope, so an unmodified client renders it instead of crashing.
+
+    ``entities`` names the *kinds* that caused a block, never the offending values, so
+    a caller can tell the user what to remove without the secret travelling further.
+    """
+    error: dict = {"message": message, "type": err_type, "param": None, "code": code}
+    if entities is not None:
+        error["entities"] = entities
+    return JSONResponse(status_code=status, content={"error": error})
 
 
 async def require_proxy_token(
@@ -145,6 +151,7 @@ def create_proxy_router(config: ProxyConfig | None = None) -> APIRouter:
                 f"pii-shield blocked this request: {', '.join(kinds)}",
                 "pii_shield_blocked",
                 "blocked",
+                entities=kinds,
             )
         except (RedactionUnavailableError, NerUnavailableError) as exc:
             # 503 and nothing forwarded: a broken detector must never degrade into

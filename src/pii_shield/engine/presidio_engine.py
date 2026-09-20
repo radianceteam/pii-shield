@@ -17,7 +17,12 @@ from __future__ import annotations
 import importlib.util
 import threading
 
-from ..languages import GLOBAL_NER_ENTITIES, LanguageProfile, get_profile
+from ..languages import (
+    GLOBAL_NER_ENTITIES,
+    NER_MODEL_ENTITIES,
+    LanguageProfile,
+    get_profile,
+)
 from ..types import Action, Finding
 
 # Entities answered by the NER pipeline and Presidio's own recognizers. Structured
@@ -43,12 +48,24 @@ class NerUnavailableError(RuntimeError):
 class PresidioDetector:
     """Thin adapter over Presidio's AnalyzerEngine, one per language."""
 
-    def __init__(self, language: str = "ru", model: str | None = None) -> None:
+    def __init__(
+        self,
+        language: str = "ru",
+        model: str | None = None,
+        *,
+        allow_blank: bool = False,
+    ) -> None:
         self.language = language
         self.profile: LanguageProfile = get_profile(language)
         self.model = model
+        # A blank spaCy pipeline carries no NER component, but Presidio's pattern,
+        # checksum and context recognizers do not need one. Allowing it is what makes
+        # a deployment that wants email and card numbers — but cannot afford a 500 MB
+        # language model — possible at all.
+        self.allow_blank = allow_blank
         self._analyzer = None
         self._loaded_model: str | None = None
+        self._blank = False
         self._lock = threading.Lock()
 
     @staticmethod
@@ -62,8 +79,18 @@ class PresidioDetector:
 
     @property
     def supported_entities(self) -> frozenset[str]:
-        """Everything this detector can be asked for, including national recognizers."""
-        return frozenset(self.profile.ner_entities)
+        """Everything this detector can be asked for, including national recognizers.
+
+        A blank pipeline drops the four model-derived entities: claiming them while
+        having no NER component would report clean text that was never examined.
+        """
+        entities = frozenset(self.profile.ner_entities)
+        return entities - NER_MODEL_ENTITIES if self._blank else entities
+
+    @property
+    def ner_available(self) -> bool:
+        """False when running on a blank pipeline, i.e. names are not being detected."""
+        return self._analyzer is not None and not self._blank
 
     @property
     def loaded_model(self) -> str | None:
@@ -129,11 +156,39 @@ class PresidioDetector:
             self._loaded_model = model_name
             return AnalyzerEngine(nlp_engine=engine, supported_languages=[self.language])
 
+        if self.allow_blank:
+            # No language model, but Presidio is importable: run its pattern
+            # recognizers on an empty pipeline. spaCy ships every language class, so
+            # this costs megabytes rather than hundreds of them.
+            engine = self._blank_engine()
+            self._blank = True
+            self._loaded_model = f"blank:{self.language}"
+            return AnalyzerEngine(nlp_engine=engine, supported_languages=[self.language])
+
         tried = "; ".join(errors) or "no pipeline installed for this language"
         raise NerUnavailableError(
             f"no spaCy pipeline loadable for language {self.language!r} ({tried}). "
             f"Install one with: python -m spacy download {self.profile.model_name('lg')}"
         )
+
+    def _blank_engine(self):
+        """A Presidio NLP engine backed by ``spacy.blank`` — tokenizer only, no NER."""
+        import spacy
+        from presidio_analyzer.nlp_engine import SpacyNlpEngine
+
+        language = self.language
+
+        class _BlankSpacyEngine(SpacyNlpEngine):
+            def __init__(self) -> None:
+                super().__init__(models=[{"lang_code": language, "model_name": "blank"}])
+                self.nlp = {language: spacy.blank(language)}
+
+            def load(self) -> None:  # nothing to load
+                return None
+
+        engine = _BlankSpacyEngine()
+        engine.load()
+        return engine
 
     @property
     def analyzer(self):
