@@ -119,7 +119,7 @@ def create_proxy_router(config: ProxyConfig | None = None) -> APIRouter:
         surrogate = request.headers.get("x-pii-shield-surrogate-language")
         if not language and not surrogate:
             return None
-        policy = Policy.for_language(language or shield.policy.language)
+        policy = Policy.like(shield.policy, language)
         policy.surrogate_language = surrogate or shield.policy.surrogate_language
         policy.surrogate_locale = None if surrogate else shield.policy.surrogate_locale
         return policy

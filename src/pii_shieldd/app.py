@@ -105,7 +105,7 @@ class AnonymizeRequest(BaseModel):
         if not overrides:
             return None
         language = overrides.pop("language", default.language)
-        base = Policy.for_language(language)
+        base = Policy.like(default, language)
         if "rules" not in overrides:
             overrides["rules"] = [r.model_dump() for r in base.rules]
         merged = base.model_dump()
@@ -173,7 +173,21 @@ def create_app(shield: Shield | None = None, proxy_config=None) -> FastAPI:
 
     @app.get("/healthz")
     async def healthz(sh: ShieldDep) -> dict:
-        return {"status": "ok", "ner_ready": sh.ner_ready, "language": sh.policy.language}
+        """What this deployment actually covers.
+
+        ``ner_ready`` alone answers "are names detected". It does not answer "is a US
+        SSN detected", which on a pattern-only deployment is also no — that entity
+        belongs to Presidio's layer. Listing the catalogue lets an integrator see the
+        real coverage instead of inferring it from the plan name.
+        """
+        policy = sh.policy
+        return {
+            "status": "ok",
+            "ner_ready": sh.ner_ready,
+            "language": policy.language,
+            "pattern_only": policy.local_only,
+            "entities": sorted(policy.active_entities),
+        }
 
     @app.post(
         "/v1/anonymize",

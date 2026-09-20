@@ -139,16 +139,16 @@ def test_partial_policy_keeps_the_protective_defaults(client):
     from refused into pseudonymized.
     """
     resp = client.post("/v1/anonymize", json={
-        "text": "SSN 521-42-8888", "policy": {"language": "en"},
+        "text": "card 4111 1111 1111 1111", "policy": {"language": "en"},
     })
     assert resp.status_code == 400
-    assert resp.json()["detail"]["error"]["entities"] == ["US_SSN"]
+    assert resp.json()["detail"]["error"]["entities"] == ["CREDIT_CARD"]
 
 
 def test_explicit_empty_rules_still_disarms(client):
     """Deliberate is fine; accidental is not."""
     resp = client.post("/v1/anonymize", json={
-        "text": "SSN 521-42-8888", "policy": {"language": "en", "rules": []},
+        "text": "card 4111 1111 1111 1111", "policy": {"language": "en", "rules": []},
     })
     assert resp.status_code == 200
 
@@ -177,14 +177,19 @@ def test_language_field_is_honoured(client):
     assert "7707083893" not in resp.json()["text"]
 
 
-def test_language_without_a_pipeline_refuses_when_names_are_wanted(pattern_policy):
-    """Fails closed rather than returning the text unexamined with a 200."""
-    from fastapi.testclient import TestClient
+def test_language_without_a_pipeline_refuses_when_names_are_wanted():
+    """Fails closed rather than returning the text unexamined with a 200.
 
+    The daemon here is a full-tier one, because that is the only tier that asks for
+    names; a pattern-only daemon does not, and answering it 200 is correct.
+    """
     from pii_shield import Policy, Shield
     from pii_shieldd.app import create_app
 
-    with TestClient(create_app(Shield(Policy.pattern_only("ru"), use_faker=False))) as c:
+    from .conftest import StubDetector
+
+    shield = Shield(Policy.for_language("ru"), use_faker=False, detector=StubDetector())
+    with TestClient(create_app(shield)) as c:
         resp = c.post("/v1/anonymize", json={
             "text": "Please call John Smith at Microsoft",
             "policy": {"language": "mk"},          # no pipeline installed for this
@@ -203,3 +208,81 @@ def test_response_says_when_names_were_not_analyzed():
         body = c.post("/v1/anonymize", json={"text": "ИНН 7707083893"}).json()
         assert body["names_analyzed"] is False
         assert "7707083893" not in body["text"]
+
+
+# --- pattern-only: the sidecar endpoints must take the same path as the proxy ---
+@pytest.fixture
+def pattern_only_client():
+    """A daemon with no Presidio and no language model, as --pattern-only builds."""
+    from pii_shield import Policy, Shield
+
+    with TestClient(create_app(Shield(Policy.pattern_only("ru"), use_faker=False))) as c:
+        yield c
+
+
+@pytest.mark.parametrize("body", [
+    {"text": "ИНН 7707083893"},
+    {"text": "ИНН 7707083893", "language": "ru"},
+    {"text": "ИНН 7707083893", "policy": {"language": "ru"}},
+    {"text": "ИНН 7707083893", "surrogate_language": "de"},
+])
+def test_anonymize_works_in_pattern_only(pattern_only_client, body):
+    """Reported live: anything naming a language answered 503 "presidio-analyzer is
+    not installed" while /v1/chat/completions on the same process worked.
+
+    A per-request policy resolved to the full preset regardless of the tier the
+    daemon was started in, so it demanded a language model that was never there.
+    """
+    resp = pattern_only_client.post("/v1/anonymize", json=body)
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+    assert payload["names_analyzed"] is False
+    assert "7707083893" not in payload["text"]
+
+
+def test_deanonymize_works_in_pattern_only(pattern_only_client):
+    first = pattern_only_client.post(
+        "/v1/anonymize", json={"text": "ИНН 7707083893", "language": "ru"}
+    ).json()
+    back = pattern_only_client.post("/v1/deanonymize", json={
+        "text": first["text"], "session_id": first["session_id"],
+    })
+    assert back.status_code == 200
+    assert back.json()["text"] == "ИНН 7707083893"
+
+
+@pytest.mark.parametrize("text", [
+    "СНИЛС 112-233-445 95",
+    "карта 4111 1111 1111 1111",
+    "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+])
+def test_pattern_only_still_blocks_with_a_partial_policy(pattern_only_client, text):
+    """Staying in the tier must not cost the protective defaults."""
+    resp = pattern_only_client.post(
+        "/v1/anonymize", json={"text": text, "policy": {"language": "ru"}}
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["error"]["type"] == "pii_shield_blocked"
+
+
+def test_healthz_reports_the_real_coverage(pattern_only_client):
+    """`ner_ready` answers "are names detected"; it does not answer "is a US SSN"."""
+    body = pattern_only_client.get("/healthz").json()
+    assert body["ner_ready"] is False
+    assert body["pattern_only"] is True
+    assert "RU_INN" in body["entities"]
+    assert "PERSON" not in body["entities"]
+
+
+def test_switching_language_switches_the_catalogue(pattern_only_client):
+    """Worth knowing before routing mixed-language traffic at one deployment.
+
+    A Russian INN is not in the English catalogue, so asking for English means it is
+    not looked for. /healthz lists what a deployment covers for exactly this reason.
+    """
+    resp = pattern_only_client.post(
+        "/v1/anonymize", json={"text": "ИНН 7707083893", "language": "en"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["text"] == "ИНН 7707083893"      # not examined, not claimed clean
+    assert resp.json()["names_analyzed"] is False

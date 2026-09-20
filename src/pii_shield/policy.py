@@ -348,6 +348,20 @@ class Policy(BaseModel):
         )
 
     @classmethod
+    def like(cls, base: Policy, language: str | None = None) -> Policy:
+        """A policy of the same *tier* as ``base``, for ``language``.
+
+        A request may name a language, and the preset it resolves to must not silently
+        upgrade the deployment: a daemon started pattern-only has no Presidio and no
+        language model, so answering such a request with ``for_language`` turned every
+        one of them into a 503 while the proxy on the same process worked fine.
+        """
+        language = language or base.language
+        if language == base.language:
+            return base.model_copy(deep=True)
+        return cls.pattern_only(language) if base.local_only else cls.for_language(language)
+
+    @classmethod
     def ru_default(cls) -> Policy:
         """Backwards-compatible alias for the Russian preset."""
         return cls.for_language("ru")

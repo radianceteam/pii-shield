@@ -216,6 +216,20 @@ implying the text was fully examined.
 A policy that *does* ask for names and has no pipeline still refuses to construct. That
 guarantee is the point of the whole design and is not weakened by the tiers.
 
+**A per-request language stays in the deployment's tier.** Naming a language in a
+request selects the preset for *that* language at the tier the daemon was started in —
+a pattern-only daemon does not quietly become one that needs a language model. It does
+change the catalogue, though: a Russian INN is not in the English one, so asking for
+English means it is not looked for. `/healthz` lists what a deployment actually covers:
+
+```json
+{"status": "ok", "ner_ready": false, "language": "ru", "pattern_only": true,
+ "entities": ["ABA_ROUTING", "CREDIT_CARD", "IBAN_CODE", "RU_INN", "..."]}
+```
+
+`ner_ready` answers "are names detected". It does not answer "is a US SSN detected",
+which on a pattern-only deployment is also no — that entity belongs to Presidio's layer.
+
 **The tiers refuse the same things.** A tier decides what can be *detected*, not what is
 too dangerous to send. Cards and credentials are found by the dependency-free layer, so
 the cheapest deployment blocks exactly what the full one blocks.

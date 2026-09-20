@@ -383,3 +383,22 @@ def test_no_header_keeps_the_server_default(client, upstream):
     )
     assert resp.status_code == 200
     assert "7707083893" not in upstream.last_text
+
+
+def test_language_header_stays_in_the_daemons_tier(upstream):
+    """A pattern-only daemon must not be upgraded into needing a language model."""
+    from pii_shield import Policy, Shield
+    from pii_shieldd.app import create_app
+
+    upstream.response_factory = lambda r: completion("ok")
+    app = create_app(
+        Shield(Policy.pattern_only("ru"), use_faker=False),
+        proxy_config=ProxyConfig(upstream="https://upstream.test/v1"),
+    )
+    with TestClient(app) as c:
+        resp = c.post(
+            "/v1/chat/completions",
+            json={"model": "m", "messages": [{"role": "user", "content": "ИНН 7707083893"}]},
+            headers={"X-Pii-Shield-Language": "en"},
+        )
+    assert resp.status_code == 200, resp.text
