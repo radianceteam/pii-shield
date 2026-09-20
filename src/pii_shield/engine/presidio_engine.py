@@ -15,6 +15,9 @@ Two details that a naive integration gets wrong, and that the profile supplies:
 from __future__ import annotations
 
 import importlib.util
+import logging
+import subprocess
+import sys
 import threading
 
 from ..languages import (
@@ -35,6 +38,17 @@ NER_ENTITIES = frozenset(GLOBAL_NER_ENTITIES)
 # CI job or a laptop can still run with a small download.
 MODEL_SIZES = ("lg", "md", "sm")
 
+logger = logging.getLogger(__name__)
+
+# Where pipelines are fetched from when downloading is switched on. Pinned to the
+# publisher's own release host rather than an arbitrary index: installing a model is
+# installing code, and this is the one place this package will ever do that.
+MODEL_RELEASE_URL = (
+    "https://github.com/explosion/spacy-models/releases/download/{name}-{version}/"
+    "{name}-{version}-py3-none-any.whl"
+)
+DOWNLOAD_TIMEOUT_SECONDS = 900
+
 
 class NerUnavailableError(RuntimeError):
     """Presidio or its language model could not be loaded.
@@ -54,6 +68,8 @@ class PresidioDetector:
         model: str | None = None,
         *,
         allow_blank: bool = False,
+        download: bool = False,
+        download_size: str = "lg",
     ) -> None:
         self.language = language
         self.profile: LanguageProfile = get_profile(language)
@@ -63,6 +79,12 @@ class PresidioDetector:
         # a deployment that wants email and card numbers — but cannot afford a 500 MB
         # language model — possible at all.
         self.allow_blank = allow_blank
+        # Off by default, and deliberately so: the failure this replaced was Presidio
+        # fetching a model by itself, into an environment it chose, blocking startup
+        # for five minutes with no output. When switched on, the fetch happens here —
+        # explicitly, into this interpreter, with a timeout and a log line.
+        self.download = download
+        self.download_size = download_size
         self._analyzer = None
         self._loaded_model: str | None = None
         self._blank = False
@@ -112,6 +134,55 @@ class PresidioDetector:
         except (ImportError, ValueError):
             return False
 
+    @staticmethod
+    def model_release_version() -> str:
+        """The spacy-models release matching the installed spaCy, e.g. '3.8.0'."""
+        import spacy
+
+        major, minor = spacy.__version__.split(".")[:2]
+        return f"{major}.{minor}.0"
+
+    def fetch_model(self, size: str | None = None) -> str | None:
+        """Install a pipeline into *this* interpreter. Returns the name, or None.
+
+        Uses ``sys.executable -m pip`` rather than ``spacy download``: that command
+        resolves the target environment itself and has been observed installing into
+        a different virtualenv than the running one.
+        """
+        name = self.profile.model_name(size or self.download_size)
+        url = MODEL_RELEASE_URL.format(name=name, version=self.model_release_version())
+        logger.warning("pii-shield: downloading language pipeline %s (this takes a while)", name)
+
+        # Both installers are told which interpreter to target. Letting either pick
+        # for itself is precisely the failure this replaced. ``uv venv`` creates
+        # environments without pip, which is common enough to need the second path.
+        commands = (
+            [sys.executable, "-m", "pip", "install", "--no-input", url],
+            ["uv", "pip", "install", "--python", sys.executable, url],
+        )
+        last_error = "no installer available"
+        for command in commands:
+            try:
+                subprocess.run(
+                    command, check=True, capture_output=True,
+                    timeout=DOWNLOAD_TIMEOUT_SECONDS,
+                )
+                break
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+                last_error = f"{command[0]}: {exc}"
+                continue
+        else:
+            logger.error("pii-shield: could not download %s (%s)", name, last_error)
+            return None
+        # A package installed after this process started is invisible to find_spec
+        # until the import caches are dropped.
+        importlib.invalidate_caches()
+        if not self.model_installed(name):
+            logger.error("pii-shield: %s installed but is not importable", name)
+            return None
+        logger.warning("pii-shield: %s is ready", name)
+        return name
+
     def candidate_models(self) -> list[str]:
         """Installed pipelines to try, largest first.
 
@@ -120,11 +191,15 @@ class PresidioDetector:
         """
         if self.model:
             return [self.model]
-        return [
+        installed = [
             name
             for name in (self.profile.model_name(size) for size in MODEL_SIZES)
             if self.model_installed(name)
         ]
+        if installed or not self.download:
+            return installed
+        fetched = self.fetch_model()
+        return [fetched] if fetched else []
 
     def _build(self):
         from presidio_analyzer import AnalyzerEngine
@@ -166,9 +241,12 @@ class PresidioDetector:
             return AnalyzerEngine(nlp_engine=engine, supported_languages=[self.language])
 
         tried = "; ".join(errors) or "no pipeline installed for this language"
+        wheel = MODEL_RELEASE_URL.format(
+            name=self.profile.model_name("lg"), version=self.model_release_version()
+        )
         raise NerUnavailableError(
             f"no spaCy pipeline loadable for language {self.language!r} ({tried}). "
-            f"Install one with: python -m spacy download {self.profile.model_name('lg')}"
+            f"Install one with: pip install {wheel}"
         )
 
     def _blank_engine(self):
@@ -203,9 +281,41 @@ class PresidioDetector:
                     self._analyzer = self._build()
         return self._analyzer
 
-    def warm(self) -> None:
-        """Force the model load now, so the first real request does not pay for it."""
+    def person_label_reachable(self) -> bool:
+        """True if some label this pipeline emits maps to PERSON.
+
+        A pipeline whose tagset Presidio does not know finds names and then discards
+        every one of them, reporting clean text. Korean and Swedish both did exactly
+        that. Rather than chase tagsets one language at a time, the mapping is checked
+        against the labels the loaded pipeline actually declares.
+        """
+        if self._blank:
+            return False
+        try:
+            from presidio_analyzer.nlp_engine import NerModelConfiguration
+
+            mapping = dict(NerModelConfiguration().model_to_presidio_entity_mapping)
+            mapping.update(self.profile.label_map)
+            nlp = self.analyzer.nlp_engine.nlp[self.language]
+            labels = set(nlp.get_pipe("ner").labels)
+        except Exception:
+            # Cannot introspect — do not turn an unknown into a refusal.
+            return True
+        return any(mapping.get(label) == "PERSON" for label in labels)
+
+    def warm(self, require_person: bool = False) -> None:
+        """Force the model load now, so the first real request does not pay for it.
+
+        With *require_person*, also refuse a pipeline whose labels cannot produce a
+        PERSON: loading it would look like success and detect no names at all.
+        """
         _ = self.analyzer
+        if require_person and not self.person_label_reachable():
+            raise NerUnavailableError(
+                f"the pipeline loaded for {self.language!r} ({self._loaded_model}) emits no "
+                "label that maps to PERSON, so names would not be detected. Add a mapping "
+                "for its tagset in pii_shield.languages._LABEL_MAPS."
+            )
 
     def detect(self, text: str, entities: set[str], threshold: float) -> list[Finding]:
         wanted = sorted(entities & self.supported_entities)

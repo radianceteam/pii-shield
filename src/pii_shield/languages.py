@@ -78,6 +78,13 @@ PROFILE_ALLOWLISTS: dict[str, tuple[str, ...]] = {
 # Korean pipelines are trained on the KLUE tagset, whose labels share nothing with
 # OntoNotes. Without this, Presidio maps none of them and Korean silently finds
 # nothing at all — the worst possible failure for this tool.
+# Swedish pipelines use the SUC tagset: PRS for a person, TME for a time. Neither is
+# in Presidio's mapping either, with the same consequence — names found and discarded.
+SV_LABEL_MAP = {
+    "PRS": "PERSON",
+    "TME": "DATE_TIME",
+}
+
 KO_LABEL_MAP = {
     "PS": "PERSON",
     "OG": "ORGANIZATION",
@@ -206,6 +213,9 @@ _FAKER_LOCALES = {
 # Korean, so the default floor of 3 would discard exactly what must be caught.
 _MIN_NER_SPAN = {"zh": 2, "ja": 2, "ko": 2}
 
+# Pipelines whose tagset Presidio does not know.
+_LABEL_MAPS = {"ko": KO_LABEL_MAP, "sv": SV_LABEL_MAP}
+
 
 def _build_profiles() -> dict[str, LanguageProfile]:
     profiles: dict[str, LanguageProfile] = {}
@@ -215,7 +225,7 @@ def _build_profiles() -> dict[str, LanguageProfile]:
             code=code,
             spacy_model=f"{code}_{family}",
             faker_locale=_FAKER_LOCALES.get(code),
-            label_map=dict(KO_LABEL_MAP) if code == "ko" else {},
+            label_map=dict(_LABEL_MAPS.get(code, {})),
             min_ner_span=_MIN_NER_SPAN.get(code, 3),
             allowlist=UNIVERSAL_ALLOWLIST + PROFILE_ALLOWLISTS.get(code, ()),
             presidio_national=PRESIDIO_NATIONAL.get(code, ()),

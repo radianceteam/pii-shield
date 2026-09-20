@@ -16,6 +16,7 @@ AUTH_ENV = "PII_SHIELD_TOKEN"
 # Keys accepted in a config file, each mirroring a command-line flag.
 CONFIG_KEYS = frozenset({
     "host", "port", "language", "surrogate_language", "upstream", "allow_remote",
+    "download_models",
 })
 
 
@@ -42,6 +43,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--download-models",
+        action="store_true",
+        default=None,
+        help=(
+            "Fetch a missing language pipeline instead of refusing to start. Off by "
+            "default: it installs code at run time and blocks for minutes. Sensible on "
+            "a workstation, wrong for a container, which should ship what it needs."
+        ),
+    )
+    parser.add_argument(
         "--allow-remote",
         action="store_true",
         default=None,
@@ -56,6 +67,7 @@ DEFAULTS = {
     "language": "ru",
     "surrogate_language": None,
     "allow_remote": False,
+    "download_models": False,
 }
 
 
@@ -128,7 +140,16 @@ def build_app(args):
         proxy_config.upstream = upstream.rstrip("/")
         print(f"proxy enabled: /v1/chat/completions -> {proxy_config.upstream}", file=sys.stderr)
 
-    return create_app(Shield(policy), proxy_config=proxy_config)
+    download = bool(
+        getattr(args, "download_models", False)
+        or os.environ.get("PII_SHIELD_DOWNLOAD_MODELS", "").lower() in ("1", "true", "yes")
+    )
+    if download:
+        print("model download enabled: a missing pipeline will be fetched", file=sys.stderr)
+
+    return create_app(
+        Shield(policy, download_models=download), proxy_config=proxy_config
+    )
 
 
 def startup_error(exc: Exception, language: str) -> str:

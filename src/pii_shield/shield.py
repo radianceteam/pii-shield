@@ -41,10 +41,15 @@ class Shield:
         store: SessionStore | None = None,
         detector: PresidioDetector | None = None,
         use_faker: bool = True,
+        download_models: bool = False,
     ) -> None:
         self.policy = policy or Policy.ru_default()
         self.store = store or SessionStore()
         self._use_faker = use_faker
+        # Opt-in: fetch a missing language pipeline instead of refusing. Useful on a
+        # workstation or a long-lived server that should pick up a new language
+        # without a rebuild; wrong for a container, which should ship what it needs.
+        self._download_models = download_models
         # One detector per language, built on demand. A request may carry its own
         # policy — the sidecar accepts one per call — and that policy may name a
         # different language than the shield was configured with. Holding a single
@@ -114,9 +119,11 @@ class Shield:
                     )
                 return cached
 
-        detector = PresidioDetector(language, allow_blank=not require_ner)
+        detector = PresidioDetector(
+            language, allow_blank=not require_ner, download=self._download_models
+        )
         try:
-            detector.warm()
+            detector.warm(require_person=require_ner)
         except NerUnavailableError:
             if policy.fail_closed:
                 raise

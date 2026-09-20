@@ -551,10 +551,36 @@ same text, the one the policy *blocks* wins over the one it *allows*. Without th
 junk `DATE_TIME` scoring 0.85 swallows a real `US_SSN` scoring 0.4, which is exactly
 backwards for a tool whose job is to stop the second one from leaving.
 
-**Nothing is downloaded at startup.** Presidio reacts to a missing spaCy pipeline by
-trying to install it, which blocks for minutes and can write into a different
-virtualenv. Pipelines are therefore checked for importability before Presidio is asked
-to load them, so an absent one is skipped instantly.
+**Nothing is downloaded unless you ask.** Presidio reacts to a missing spaCy pipeline by
+trying to install it — into an environment it picks itself, blocking startup for minutes
+with no output. It has been observed installing into a *different* project's virtualenv.
+Pipelines are therefore checked for importability before Presidio is asked to load them,
+so an absent one is skipped instantly.
+
+Fetching one deliberately is a different thing, and is available:
+
+```bash
+pii-shieldd --download-models          # or PII_SHIELD_DOWNLOAD_MODELS=1
+```
+```python
+Shield(policy, download_models=True)
+```
+
+When on, a missing pipeline is installed from the publisher's own release host into
+**this** interpreter — `sys.executable -m pip`, falling back to `uv pip install --python
+sys.executable` because `uv venv` creates environments without pip. Both are told which
+environment to use; letting the installer choose is the failure this replaces.
+
+Leave it off in a container: an image should ship what it needs, and a first request that
+blocks for minutes while it downloads half a gigabyte is not a request anyone wants to
+serve. It earns its place on a workstation, in CI, and on a long-lived server that should
+pick up a new language without a rebuild.
+
+**A pipeline that cannot produce a PERSON is refused.** Korean and Swedish models emit
+their own tagsets — `PS`, `PRS` — which Presidio's mapping does not contain, so names were
+found and then discarded while the text came back looking clean. The loaded pipeline's own
+labels are now checked against the mapping, which closes the class rather than chasing one
+tagset at a time.
 
 ## Accuracy, honestly
 
