@@ -1,0 +1,12 @@
+# pii-shieldd --config pii-shield.toml
+# Command-line flags override anything set here.
+
+[pii-shield]
+host = "127.0.0.1"
+port = 8099
+language = "ru"
+
+# Enable the OpenAI-compatible proxy by pointing it at a provider.
+# upstream = "https://api.openai.com/v1"
+
+# allow_remote = false

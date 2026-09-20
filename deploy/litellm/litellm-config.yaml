@@ -1,0 +1,27 @@
+# LiteLLM proxy configuration.
+#
+# Add one entry per model the clients may call. `api_key` reads from the environment,
+# so the real provider credential lives in .env and never reaches a client.
+
+model_list:
+  - model_name: gpt-5.5
+    litellm_params:
+      model: openai/gpt-5.5
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: claude-opus-5
+    litellm_params:
+      model: anthropic/claude-opus-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+  # Off by default in LiteLLM, and pinned off here on purpose: turning it on would
+  # write prompt and response bodies into Postgres. pii-shield runs in front, so what
+  # would land there is already pseudonymized — but the cheapest way to protect data
+  # is still not to store it.
+  store_prompts_in_spend_logs: false
+
+litellm_settings:
+  drop_params: true

@@ -1,0 +1,8 @@
+name: pii-shield
+version: "0.1.0"
+description: "Pseudonymize identifying data (names, organizations, phones, national identifiers) before a prompt leaves for a cloud model, and restore the real values in the reply. Credential shapes are redacted rather than replaced. Rewrites the request through llm_request middleware — the pre_llm_call and pre_api_request hooks cannot rewrite messages. Backed by pii-shield (MIT); needs `pip install pii-shield[ner]` plus a spaCy model for the configured language."
+author: "Radiance Team"
+middleware:
+  - llm_request
+hooks:
+  - transform_llm_output

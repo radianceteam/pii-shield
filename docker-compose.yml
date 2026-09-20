@@ -1,0 +1,31 @@
+services:
+  pii-shield:
+    build:
+      context: .
+      args:
+        # Languages baked into the image. Each adds a few hundred megabytes.
+        PII_SHIELD_LANGUAGES: "${PII_SHIELD_LANGUAGES:-ru en}"
+        SPACY_MODEL_SIZE: "${SPACY_MODEL_SIZE:-lg}"
+    image: pii-shield:local
+    restart: unless-stopped
+    environment:
+      # Required. The sidecar refuses a non-loopback bind without it, and inside a
+      # container the bind is always non-loopback.
+      PII_SHIELD_TOKEN: "${PII_SHIELD_TOKEN:?set PII_SHIELD_TOKEN in .env}"
+      # Set to enable the OpenAI-compatible proxy at /v1/chat/completions.
+      PII_SHIELD_UPSTREAM: "${PII_SHIELD_UPSTREAM:-}"
+      # Optional: used only when the caller sends no Authorization header of its own.
+      PII_SHIELD_UPSTREAM_KEY: "${PII_SHIELD_UPSTREAM_KEY:-}"
+      PII_SHIELD_LANGUAGE: "${PII_SHIELD_LANGUAGE:-ru}"
+    ports:
+      # Loopback only. This service holds raw PII in memory; publishing it on all
+      # interfaces would make it an anonymization oracle for the whole network.
+      - "127.0.0.1:${PII_SHIELD_PORT:-8099}:8099"
+    # Measured on a server: 1.1 GB resident with one language loaded, 1.6 GB with two.
+    # Pipelines load on demand, so a policy naming a third language raises this again.
+    mem_limit: "${PII_SHIELD_MEM_LIMIT:-3g}"
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp

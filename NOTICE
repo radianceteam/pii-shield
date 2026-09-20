@@ -1,0 +1,23 @@
+pii-shield
+Copyright (c) 2026 Radiance Team
+
+This product includes software developed by third parties:
+
+---
+
+Microsoft Presidio (presidio-analyzer, presidio-anonymizer)
+Copyright (c) Microsoft Corporation and the Presidio contributors
+Licensed under the MIT License.
+https://github.com/data-privacy-stack/presidio
+
+Used as a runtime dependency (not vendored).
+
+---
+
+Hermes (hermes-agent)
+Copyright (c) 2025 Nous Research
+Licensed under the MIT License.
+
+The secret-pattern set and the fail-closed egress contract in
+`src/pii_shield/secrets/` are derived from `agent/redact.py` of that project.
+Each derived construct is marked in-file with its provenance.

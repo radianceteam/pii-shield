@@ -1,0 +1,82 @@
+# pii-shield behind LiteLLM: access control for a publicly reachable proxy.
+#
+# Chain:  client → nginx (TLS) → pii-shield → LiteLLM → provider
+#
+# Why this order. pii-shield sits *in front* so that identifying data is gone before
+# anything downstream can record it: LiteLLM keeps spend logs in Postgres, and although
+# it does not store prompt content by default, a future config change cannot leak what
+# was never there. pii-shield forwards `Authorization` untouched, so the virtual key the
+# client presents is validated by LiteLLM, which owns the real provider credentials.
+#
+# What each part is responsible for:
+#   nginx       TLS, and injecting pii-shield's own header so clients never see it
+#   pii-shield  pseudonymization; no user management of its own
+#   LiteLLM     virtual keys per client, RPM/TPM limits, budgets, provider routing
+#   postgres    where LiteLLM keeps keys, budgets and spend
+
+services:
+  pii-shield:
+    build:
+      context: ../..
+      args:
+        PII_SHIELD_LANGUAGES: "${PII_SHIELD_LANGUAGES:-ru en}"
+        SPACY_MODEL_SIZE: "${SPACY_MODEL_SIZE:-lg}"
+    image: pii-shield:local
+    restart: unless-stopped
+    depends_on:
+      litellm:
+        condition: service_started
+    environment:
+      # Second line of defence, injected by nginx. Clients authenticate to LiteLLM,
+      # not here — this only stops something inside the network reaching the shield
+      # directly and using it as an anonymization oracle.
+      PII_SHIELD_TOKEN: "${PII_SHIELD_TOKEN:?set PII_SHIELD_TOKEN in .env}"
+      PII_SHIELD_UPSTREAM: "http://litellm:4000/v1"
+      PII_SHIELD_LANGUAGE: "${PII_SHIELD_LANGUAGE:-ru}"
+      # Pseudonymize into a different language than the one being read.
+      PII_SHIELD_SURROGATE_LANGUAGE: "${PII_SHIELD_SURROGATE_LANGUAGE:-}"
+    ports:
+      - "127.0.0.1:${PII_SHIELD_PORT:-8099}:8099"
+    mem_limit: "${PII_SHIELD_MEM_LIMIT:-3g}"
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/tmp]
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Admin credential: mints and revokes virtual keys. Never handed to a client.
+      LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:?set LITELLM_MASTER_KEY in .env}"
+      DATABASE_URL: "postgresql://litellm:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/litellm"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+    volumes:
+      - ./litellm-config.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    # Not published to the host: only pii-shield talks to it. Reaching LiteLLM
+    # directly would bypass pseudonymization entirely.
+    expose: ["4000"]
+    security_opt: [no-new-privileges:true]
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}"
+      POSTGRES_DB: litellm
+    volumes:
+      - litellm-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    security_opt: [no-new-privileges:true]
+
+volumes:
+  litellm-db:

@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      # No NER extra here: this job proves the package works, and stays honest about
+      # it, without a 500 MB model download. The NER tests skip themselves.
+      - run: uv pip install --system -e ".[dev,server,surrogates]"
+      - run: ruff check .
+      - run: pytest -q
+
+  test-ner:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: uv pip install --system -e ".[dev,ner,server,surrogates]"
+      # One pipeline per language the live suite exercises. Russian gets the large
+      # pipeline because it is the most heavily tested; the rest use small ones to keep
+      # the job under a few minutes. Each language skips itself if its model is absent,
+      # so a failure here means a real regression, never a missing download.
+      - name: Install spaCy pipelines
+        run: |
+          for m in ru_core_news_lg en_core_web_sm zh_core_web_sm ja_core_news_sm ko_core_news_sm; do
+            uv pip install --system "https://github.com/explosion/spacy-models/releases/download/$m-3.8.0/$m-3.8.0-py3-none-any.whl"
+          done
+      - run: pytest -q
