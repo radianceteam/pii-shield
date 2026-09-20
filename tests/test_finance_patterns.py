@@ -129,3 +129,40 @@ def test_aba_needs_context_to_be_confident():
 
     strong = scan("ABA routing 021000021")
     assert strong[0].score == pytest.approx(0.9)
+
+
+# --- IBAN -------------------------------------------------------------------
+@pytest.mark.parametrize("value", [
+    "DE89370400440532013000",        # Germany, 22
+    "GB33BUKB20201555555555",        # United Kingdom, 22
+    "FR1420041010050500013M02606",   # France, 27 — contains a letter in the body
+    "NL91ABNA0417164300",            # Netherlands, 18
+    "ES9121000418450200051332",      # Spain, 24
+])
+def test_valid_iban(value):
+    from pii_shield.engine.finance_patterns import valid_iban
+
+    assert valid_iban(value)
+
+
+@pytest.mark.parametrize("value", [
+    "DE89370400440532013001",        # wrong check digits
+    "DE8937040044053201300",         # wrong length for DE
+    "XX89370400440532013000",        # not a country in the registry
+    "40817810099910004312",          # a Russian bank account, not an IBAN
+])
+def test_invalid_iban(value):
+    from pii_shield.engine.finance_patterns import valid_iban
+
+    assert not valid_iban(value)
+
+
+def test_iban_is_found_without_presidio():
+    """It carries a mod-97 checksum, so it belongs to the dependency-free tier.
+
+    Leaving it to Presidio meant a deployment too small for that dependency sent
+    every IBAN through untouched — including a German one, which is what prompted
+    this check.
+    """
+    found = scan("Rechnung: IBAN DE89370400440532013000")
+    assert [f.entity for f in found] == ["IBAN_CODE"]

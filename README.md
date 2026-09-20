@@ -191,8 +191,8 @@ with three very different footprints:
 
 | Tier | Entities | Needs |
 |---|---|---|
-| Own patterns | national identifiers (INN, SNILS, OGRN, BIK, 身份证, マイナンバー, 주민등록번호), banking codes (SWIFT/BIC, ABA, LEI), **payment cards**, credentials | nothing — regex and checksums |
-| Presidio recognizers | email, phone, IBAN, IP, URL, dates, and the national IDs Presidio ships for en/es/it/pl | `pii-shield[ner]`, but **no language model**: a blank pipeline is enough |
+| Own patterns | national identifiers (INN, SNILS, OGRN, BIK, 身份证, マイナンバー, 주민등록번호), banking codes (**IBAN**, SWIFT/BIC, ABA, LEI), **payment cards**, credentials | nothing — regex and checksums |
+| Presidio recognizers | email, phone, IP, URL, dates, and the national IDs Presidio ships for en/es/it/pl | `pii-shield[ner]`, but **no language model**: a blank pipeline is enough |
 | Language model | PERSON, ORGANIZATION, LOCATION, NRP | a spaCy pipeline, ~1 GB resident |
 
 ```python
@@ -285,6 +285,7 @@ checksum validation:
 | `ABA_ROUTING` | Federal Reserve prefix range, plus the 3-7-1 weighted mod-10 check |
 | `LEI` | ISO 17442 (ISO 7064 MOD 97-10) checksum |
 | `CREDIT_CARD` | Luhn plus a real issuer prefix — Presidio recognizes cards in four languages only, so a card used to pass straight through Russian text |
+| `IBAN_CODE` | ISO 7064 MOD 97-10 plus the registry's per-country length |
 
 **The stand-ins are themselves valid.** A real BIC becomes another well-formed BIC with the
 right country code for the locale, an IBAN becomes an IBAN that passes its check digits, an

@@ -132,7 +132,7 @@ NER_MODEL_ENTITIES = frozenset({"PERSON", "ORGANIZATION", "LOCATION", "NRP"})
 #    ``presidio-analyzer`` installed, but no language model: a blank spaCy pipeline
 #    (a few megabytes, shipped with spaCy itself) is enough to run them.
 PRESIDIO_PATTERN_ENTITIES = frozenset(
-    {"EMAIL_ADDRESS", "PHONE_NUMBER", "IBAN_CODE", "IP_ADDRESS", "URL", "DATE_TIME"}
+    {"EMAIL_ADDRESS", "PHONE_NUMBER", "IP_ADDRESS", "URL", "DATE_TIME"}
 )
 
 # 3. Everything else is this project's own regex and checksum layers, which need
@@ -146,7 +146,7 @@ FINANCE_ENTITIES = ("SWIFT_BIC", "IBAN_CODE", "ABA_ROUTING", "LEI")
 # CREDIT_CARD is here rather than in the Presidio tier because Presidio only
 # recognizes it in four languages, and a card must not depend on the language it
 # was written next to.
-LOCAL_FINANCE_ENTITIES = ("SWIFT_BIC", "ABA_ROUTING", "LEI", "CREDIT_CARD")
+LOCAL_FINANCE_ENTITIES = ("SWIFT_BIC", "ABA_ROUTING", "LEI", "CREDIT_CARD", "IBAN_CODE")
 
 # Credential shapes, detected by this project's own patterns. Language-independent
 # and dependency-free, which is what makes a credentials-only deployment possible.

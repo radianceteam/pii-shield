@@ -37,6 +37,11 @@ def test_only_four_entities_need_a_language_model():
     assert NER_MODEL_ENTITIES == {"PERSON", "ORGANIZATION", "LOCATION", "NRP"}
 
 
+def test_iban_is_ours_not_presidios():
+    """It has a mod-97 checksum, which is the whole definition of the cheap tier."""
+    assert "IBAN_CODE" in LOCAL_ENTITIES
+
+
 def test_cards_are_ours_not_presidios():
     """Presidio recognizes cards in four languages only; a card must not depend on
     the language it was written next to."""
@@ -114,6 +119,13 @@ def test_cards_are_caught_in_any_language():
     shield = Shield(Policy.pattern_only("ru"), use_faker=False)
     found = shield.detect("Оплата картой 4111111111111111")
     assert [f.entity for f in found] == ["CREDIT_CARD"]
+
+
+def test_pattern_only_finds_a_foreign_iban():
+    """The tiny tier must catch a German IBAN without any German anything."""
+    shield = Shield(Policy.pattern_only("ru"), use_faker=False)
+    found = shield.detect("Rechnung: IBAN DE89370400440532013000")
+    assert [f.entity for f in found] == ["IBAN_CODE"]
 
 
 def test_a_german_iban_is_not_a_russian_bank_account():

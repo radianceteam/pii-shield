@@ -128,14 +128,14 @@ class SurrogateFactory:
     def make(self, entity: str, original: str) -> str:
         """Return a fresh surrogate for *entity*. Never returns a value twice."""
         for _ in range(64):
-            candidate = self._draw(entity)
+            candidate = self._draw(entity, original)
             if candidate in self._issued or self._overlaps(candidate, original):
                 continue
             self._issued.add(candidate)
             return candidate
         # Pools and Faker can both repeat; the suffix guarantees termination.
         n = self._bump(entity)
-        candidate = f"{self._draw(entity)} #{n}"
+        candidate = f"{self._draw(entity, original)} #{n}"
         self._issued.add(candidate)
         return candidate
 
@@ -181,17 +181,46 @@ class SurrogateFactory:
         self._counters[entity] = self._counters.get(entity, 0) + 1
         return self._counters[entity]
 
-    def _draw(self, entity: str) -> str:
+    def _draw(self, entity: str, original: str = "") -> str:
         if entity in _TOKEN_ENTITIES:
             return f"<{entity}_{self._bump(entity)}>"
         if self._faker is not None:
-            drawn = self._from_faker(entity)
+            drawn = self._from_faker(entity, original)
             if drawn is not None:
                 return drawn
         pool = _FALLBACK_POOLS.get(entity) if self._pools_apply() else None
         if not pool:
             return f"<{entity}_{self._bump(entity)}>"
         return pool[self._bump(entity) % len(pool) - 1]
+
+    @staticmethod
+    def _make_iban(f, original: str) -> str:
+        """An IBAN for the same country as the one being replaced."""
+        from .finance_patterns import IBAN_LENGTHS, make_iban
+
+        country = original.replace(" ", "").upper()[:2]
+        if country not in IBAN_LENGTHS:
+            return f.iban()
+        length = IBAN_LENGTHS[country]
+        body = f.bothify("#" * (length - 4))
+        return make_iban(country, body) or f.iban()
+
+    @staticmethod
+    def _make_bic(f, original: str) -> str:
+        """A BIC for the same country as the one being replaced."""
+        from .finance_patterns import ISO_3166_ALPHA2, make_bic
+
+        value = original.strip().upper()
+        country = value[4:6] if len(value) in (8, 11) else ""
+        if country not in ISO_3166_ALPHA2:
+            return f.swift()
+        branch = f.bothify("???", letters="ABCDEFGHIJKLMNOPQRSTUVWXYZ") if len(value) == 11 else ""
+        return make_bic(
+            country,
+            f.bothify("????", letters="ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+            f.bothify("??", letters="ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+            branch,
+        )
 
     @staticmethod
     def _make_lei(f) -> str:
@@ -204,7 +233,7 @@ class SurrogateFactory:
     def _pools_apply(self) -> bool:
         return bool(self._locale) and self._locale.lower().startswith("ru")
 
-    def _from_faker(self, entity: str) -> str | None:
+    def _from_faker(self, entity: str, original: str = "") -> str | None:
         f = self._faker
         assert f is not None
         try:
@@ -223,10 +252,9 @@ class SurrogateFactory:
             if entity == "URL":
                 return f.url()
             if entity == "SWIFT_BIC":
-                # swift8/swift11 so the replacement keeps the original's length class.
-                return f.swift()
+                return self._make_bic(f, original)
             if entity == "IBAN_CODE":
-                return f.iban()
+                return self._make_iban(f, original)
             if entity == "ABA_ROUTING":
                 return f.aba()
             if entity == "CREDIT_CARD":

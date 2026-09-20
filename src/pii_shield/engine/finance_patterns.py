@@ -100,6 +100,42 @@ def valid_aba(value: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# IBAN
+# ---------------------------------------------------------------------------
+# Presidio recognizes IBANs, but only once it is installed. An IBAN carries an
+# ISO 7064 MOD 97-10 checksum and a country-specific length, which is exactly the
+# class the dependency-free tier is meant to cover — leaving it to Presidio meant a
+# deployment too small for that dependency sent every IBAN through untouched.
+IBAN_RE = re.compile(r"(?<![A-Z0-9])[A-Z]{2}\d{2}[A-Z0-9]{10,30}(?![A-Z0-9])")
+
+# Length per country, from the IBAN registry. A German IBAN is 22 characters; a
+# 22-character string starting "DE" that fails this table is not one.
+IBAN_LENGTHS = {
+    "AD": 24, "AE": 23, "AL": 28, "AT": 20, "AZ": 28, "BA": 20, "BE": 16, "BG": 22,
+    "BH": 22, "BR": 29, "BY": 28, "CH": 21, "CR": 22, "CY": 28, "CZ": 24, "DE": 22,
+    "DK": 18, "DO": 28, "EE": 20, "EG": 29, "ES": 24, "FI": 18, "FO": 18, "FR": 27,
+    "GB": 22, "GE": 22, "GI": 23, "GL": 18, "GR": 27, "GT": 28, "HR": 21, "HU": 28,
+    "IE": 22, "IL": 23, "IQ": 23, "IS": 26, "IT": 27, "JO": 30, "KW": 30, "KZ": 20,
+    "LB": 28, "LC": 32, "LI": 21, "LT": 20, "LU": 20, "LV": 21, "LY": 25, "MC": 27,
+    "MD": 24, "ME": 22, "MK": 19, "MR": 27, "MT": 31, "MU": 30, "NL": 18, "NO": 15,
+    "PK": 24, "PL": 28, "PS": 29, "PT": 25, "QA": 29, "RO": 24, "RS": 22, "RU": 33,
+    "SA": 24, "SC": 31, "SE": 24, "SI": 19, "SK": 24, "SM": 27, "ST": 25, "SV": 28,
+    "TL": 23, "TN": 24, "TR": 26, "UA": 29, "VA": 22, "VG": 24, "XK": 20,
+}
+
+
+def valid_iban(value: str) -> bool:
+    """Known country, right length for it, and the mod-97 checksum."""
+    value = value.replace(" ", "").upper()
+    expected = IBAN_LENGTHS.get(value[:2])
+    if expected is None or len(value) != expected:
+        return False
+    if not value[2:4].isdigit() or not value[4:].isalnum():
+        return False
+    return _mod97(value[4:] + value[:4]) == 1
+
+
+# ---------------------------------------------------------------------------
 # Payment cards
 # ---------------------------------------------------------------------------
 # Presidio ships a credit-card recognizer for English, Spanish, Italian and Polish
@@ -150,6 +186,27 @@ def valid_card(digits: str) -> bool:
     return luhn_ok(digits)
 
 
+def make_iban(country: str, body: str) -> str:
+    """Build a valid IBAN for *country* from a supplied body of the right length.
+
+    The country is taken from the value being replaced rather than from the locale.
+    A German IBAN that comes back Russian has changed which country the money goes
+    to — the stand-in stops being plausible exactly where plausibility matters.
+    """
+    country = country.upper()
+    length = IBAN_LENGTHS.get(country)
+    if length is None:
+        return ""
+    body = (body.upper() + "0" * length)[: length - 4]
+    check = 98 - _mod97(body + country + "00")
+    return f"{country}{check:02d}{body}"
+
+
+def make_bic(country: str, bank: str, location: str, branch: str = "") -> str:
+    """Build a BIC keeping the country of the value being replaced."""
+    return f"{bank[:4].upper():X<4}{country.upper()}{location[:2].upper():X<2}{branch[:3].upper()}"
+
+
 def lei_check_digits(prefix18: str) -> str:
     """Two ISO 7064 MOD 97-10 check digits for an 18-character LEI prefix.
 
@@ -192,6 +249,11 @@ def scan(text: str, *, entities: set[str] | None = None) -> list[Finding]:
             Finding(entity=entity, start=start, end=end, score=score, action=Action.MASK,
                     recognizer=f"finance:{entity.lower()}")
         )
+
+    if wanted("IBAN_CODE"):
+        for m in IBAN_RE.finditer(text):
+            if valid_iban(m.group(0)):
+                claim("IBAN_CODE", *m.span(), 0.95)
 
     if wanted("CREDIT_CARD"):
         for m in CARD_RE.finditer(text):

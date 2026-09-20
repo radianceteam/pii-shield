@@ -83,3 +83,25 @@ def test_card_surrogate_is_a_valid_card():
     for _ in range(10):
         card = factory.make("CREDIT_CARD", "4111111111111111")
         assert valid_card(card.replace(" ", "").replace("-", "")), card
+
+
+@pytest.mark.parametrize("original", [
+    "DE89370400440532013000", "GB33BUKB20201555555555", "FR1420041010050500013M02606",
+])
+def test_iban_surrogate_keeps_the_country(original):
+    """A German IBAN coming back Russian has changed which country the money goes to."""
+    from pii_shield.engine.finance_patterns import valid_iban
+
+    factory = SurrogateFactory(seed="s", locale="ru_RU")
+    surrogate = factory.make("IBAN_CODE", original)
+    assert surrogate[:2] == original[:2]
+    assert valid_iban(surrogate)
+
+
+@pytest.mark.parametrize("original", ["DEUTDEFF", "SBOSUS33XXX"])
+def test_bic_surrogate_keeps_the_country_and_length(original):
+    factory = SurrogateFactory(seed="s", locale="ru_RU")
+    surrogate = factory.make("SWIFT_BIC", original)
+    assert surrogate[4:6] == original[4:6]
+    assert len(surrogate) == len(original)
+    assert valid_bic(surrogate)
