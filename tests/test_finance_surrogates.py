@@ -75,14 +75,23 @@ class _NoNer:
         return []
 
 
-def test_card_surrogate_is_a_valid_card():
-    """Same rule as the other financial codes: a malformed stand-in is corrupted data."""
-    from pii_shield.engine.finance_patterns import valid_card
+def test_card_surrogate_is_deliberately_not_chargeable():
+    """The one place the "valid stand-in" rule inverts.
+
+    A malformed IBAN is corrupted data, so those are built valid. A Luhn-valid card
+    number with a real issuer prefix is, by construction, a number that could belong
+    to somebody — chargeable, lookup-able, able to collide with a live account.
+    Passing validation is the hazard here, not the feature, so the check digit is
+    wrong on purpose while the shape is kept.
+    """
+    from pii_shield.engine.finance_patterns import luhn_ok
 
     factory = SurrogateFactory(seed="s", locale="ru_RU")
     for _ in range(10):
         card = factory.make("CREDIT_CARD", "4111111111111111")
-        assert valid_card(card.replace(" ", "").replace("-", "")), card
+        digits = "".join(c for c in card if c.isdigit())
+        assert len(digits) == 16
+        assert not luhn_ok(digits), card
 
 
 @pytest.mark.parametrize("original", [
@@ -105,3 +114,39 @@ def test_bic_surrogate_keeps_the_country_and_length(original):
     assert surrogate[4:6] == original[4:6]
     assert len(surrogate) == len(original)
     assert valid_bic(surrogate)
+
+
+@pytest.mark.parametrize("original", [
+    "DE89 3704 0044 0532 0130 00", "DE89370400440532013000",
+    "GB33 BUKB 2020 1555 5555 55",
+])
+def test_iban_surrogate_keeps_the_grouping(original):
+    from pii_shield.engine.finance_patterns import valid_iban
+
+    factory = SurrogateFactory(seed="s", locale="ru_RU")
+    surrogate = factory.make("IBAN_CODE", original)
+    assert len(surrogate) == len(original)
+    assert surrogate[:2] == original[:2]
+    assert valid_iban(surrogate)
+
+
+@pytest.mark.parametrize("original", ["+7 900 123-45-67", "8 (495) 123-45-67", "+49 30 12345678"])
+def test_phone_surrogate_keeps_the_shape(original):
+    """Faker picks a format at random; the value being replaced decides the shape."""
+    factory = SurrogateFactory(seed="s", locale="ru_RU")
+    surrogate = factory.make("RU_PHONE", original)
+    template = "".join("#" if c.isalnum() else c for c in original)
+    assert "".join("#" if c.isalnum() else c for c in surrogate) == template
+
+
+def test_phone_surrogate_keeps_the_dialling_prefix():
+    """Replacing +49 with +73 invents a country that does not dial."""
+    factory = SurrogateFactory(seed="s", locale="ru_RU")
+    assert factory.make("RU_PHONE", "+49 30 12345678").startswith("+49 ")
+
+
+def test_structured_surrogates_never_carry_a_disambiguating_suffix():
+    """"+49 30 12345678 #1" is not a phone number."""
+    factory = SurrogateFactory(seed="s", locale="ru_RU")
+    for _ in range(40):
+        assert "#" not in factory.make("RU_PHONE", "+49 30 12345678")

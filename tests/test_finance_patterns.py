@@ -166,3 +166,14 @@ def test_iban_is_found_without_presidio():
     """
     found = scan("Rechnung: IBAN DE89370400440532013000")
     assert [f.entity for f in found] == ["IBAN_CODE"]
+
+
+@pytest.mark.parametrize("written", [
+    "DE89 3704 0044 0532 0130 00",      # the normal form on an invoice
+    "DE89 3704 0044 0532 0130 00",   # non-breaking spaces
+    "DE89-3704-0044-0532-0130-00",
+    "DE89370400440532013000",
+])
+def test_iban_is_found_however_it_is_written(written):
+    """Groups of four is how an IBAN appears in letters and invoices."""
+    assert [f.entity for f in scan(f"Rechnung IBAN {written} bitte")] == ["IBAN_CODE"]

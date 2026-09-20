@@ -8,6 +8,7 @@ could reach it. Only a live curl caught it.
 from __future__ import annotations
 
 import pytest
+from fastapi.testclient import TestClient
 
 from pii_shield.engine.presidio_engine import NerUnavailableError
 from pii_shield.languages import UnsupportedLanguageError
@@ -166,3 +167,40 @@ def test_main_reports_a_startup_failure_without_a_traceback(monkeypatch, capsys)
     err = capsys.readouterr().err
     assert "pip install" in err
     assert "Traceback" not in err
+
+
+# --- pattern-only, the tier the daemon could not run ------------------------
+def test_pattern_only_flag_builds_a_cheap_policy(monkeypatch):
+    """The daemon always built the full policy, so a container without a language
+    model could not start at all — the library supported the tier and the daemon
+    did not."""
+    monkeypatch.delenv("PII_SHIELD_UPSTREAM", raising=False)
+    app = build_app(settings(["--pattern-only"]))
+    from pii_shieldd.app import get_shield
+
+    with TestClient(app):
+        policy = get_shield().policy
+        assert not policy.requires_presidio()
+        assert not policy.requires_ner()
+
+
+def test_pattern_only_via_environment(monkeypatch):
+    monkeypatch.delenv("PII_SHIELD_UPSTREAM", raising=False)
+    monkeypatch.setenv("PII_SHIELD_PATTERN_ONLY", "1")
+    app = build_app(settings())
+    from pii_shieldd.app import get_shield
+
+    with TestClient(app):
+        assert not get_shield().policy.requires_presidio()
+
+
+def test_pattern_only_via_config_file(tmp_path):
+    path = tmp_path / "c.toml"
+    path.write_text("[pii-shield]\npattern_only = true\n", encoding="utf-8")
+    assert settings(["--config", str(path)], load_config(str(path))).pattern_only is True
+
+
+def test_healthz_admits_there_is_no_ner(monkeypatch):
+    monkeypatch.delenv("PII_SHIELD_UPSTREAM", raising=False)
+    with TestClient(build_app(settings(["--pattern-only"]))) as client:
+        assert client.get("/healthz").json()["ner_ready"] is False

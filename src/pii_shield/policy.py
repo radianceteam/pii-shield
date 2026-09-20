@@ -44,6 +44,12 @@ HIGH_RISK_NATIONAL = frozenset({
     "CN_RESIDENT_ID", "JP_MY_NUMBER", "KR_RRN",
 })
 
+# Refused outright rather than replaced, at every tier. A tier decides what can be
+# *detected*; it must not change what is considered too dangerous to send. Cards and
+# credentials are detected by this project's own patterns, so the cheapest deployment
+# can honour this list in full.
+ALWAYS_BLOCKED = frozenset({"CREDIT_CARD"}) | frozenset(SECRET_ENTITIES)
+
 # Punctuation stripped from each token before an allowlist comparison.
 _TOKEN_TRIM = " \t\n.,;:!?()[]{}«»\"'-–—/\\、。「」『』（）：；！？"
 
@@ -151,7 +157,15 @@ class Policy(BaseModel):
     def catalogue_for(language: str) -> tuple[str, ...]:
         """Every entity worth looking for in this language."""
         profile = get_profile(language)
-        return GLOBAL_ENTITIES + FINANCE_ENTITIES + profile.national_entities + SECRET_ENTITIES
+        # Deduplicated, order preserved: IBAN belongs to both the global list and the
+        # banking one, and appearing twice made every consumer of `entities` count it
+        # twice.
+        seen: dict[str, None] = {}
+        for entity in (
+            GLOBAL_ENTITIES + FINANCE_ENTITIES + profile.national_entities + SECRET_ENTITIES
+        ):
+            seen.setdefault(entity, None)
+        return tuple(seen)
 
     @property
     def profile(self):
@@ -268,16 +282,15 @@ class Policy(BaseModel):
         """
         profile = get_profile(language)
         entities = [e for e in cls.catalogue_for(language) if e in LOCAL_ENTITIES]
-        blocked = sorted(set(profile.national_entities) & HIGH_RISK_NATIONAL & LOCAL_ENTITIES)
+        blocked = sorted(
+            (set(profile.national_entities) & HIGH_RISK_NATIONAL & LOCAL_ENTITIES)
+            | (ALWAYS_BLOCKED & set(entities))
+        )
         return cls(
             language=language,
             entities=entities,
             rules=[
-                *(
-                    EntityRule(entity=e, action=Action.BLOCK, threshold=0.4)
-                    for e in SECRET_ENTITIES
-                ),
-                *(EntityRule(entity=e, action=Action.BLOCK, threshold=0.4) for e in blocked),
+                EntityRule(entity=e, action=Action.BLOCK, threshold=0.4) for e in blocked
             ],
         )
 

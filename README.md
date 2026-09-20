@@ -195,6 +195,10 @@ with three very different footprints:
 | Presidio recognizers | email, phone, IP, URL, dates, and the national IDs Presidio ships for en/es/it/pl | `pii-shield[ner]`, but **no language model**: a blank pipeline is enough |
 | Language model | PERSON, ORGANIZATION, LOCATION, NRP | a spaCy pipeline, ~1 GB resident |
 
+```bash
+pii-shieldd --pattern-only --upstream https://api.openai.com/v1
+# or PII_SHIELD_PATTERN_ONLY=1, or pattern_only = true in the config file
+```
 ```python
 Policy.pattern_only("ru")     # tier 1 only: ~40 MB resident, starts instantly
 Policy.for_language("ru")     # everything, including names
@@ -211,6 +215,10 @@ implying the text was fully examined.
 
 A policy that *does* ask for names and has no pipeline still refuses to construct. That
 guarantee is the point of the whole design and is not weakened by the tiers.
+
+**The tiers refuse the same things.** A tier decides what can be *detected*, not what is
+too dangerous to send. Cards and credentials are found by the dependency-free layer, so
+the cheapest deployment blocks exactly what the full one blocks.
 
 ## Use
 
@@ -285,6 +293,8 @@ checksum validation:
 | `ABA_ROUTING` | Federal Reserve prefix range, plus the 3-7-1 weighted mod-10 check |
 | `LEI` | ISO 17442 (ISO 7064 MOD 97-10) checksum |
 | `CREDIT_CARD` | Luhn plus a real issuer prefix — Presidio recognizes cards in four languages only, so a card used to pass straight through Russian text |
+
+Cards are the one exception to the valid-stand-in rule. They are **blocked** by default at every tier, and when a policy does replace one the result is card-shaped but deliberately fails Luhn: a valid replacement with a real issuer prefix is by construction a number that could belong to somebody, and passing validation is the hazard rather than the feature.
 | `IBAN_CODE` | ISO 7064 MOD 97-10 plus the registry's per-country length |
 
 **The stand-ins are themselves valid.** A real BIC becomes another well-formed BIC with the

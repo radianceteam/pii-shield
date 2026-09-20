@@ -50,6 +50,15 @@ _FALLBACK_POOLS: dict[str, tuple[str, ...]] = {  # noqa: RUF001 - names, not pro
 
 # Every national phone entity draws from Faker's locale-aware phone provider, so a
 # Korean number is replaced by a Korean-shaped one rather than a bare token.
+# Entities where reusing a word of the original would leak it. Structured values are
+# excluded on purpose: a phone deliberately keeps its country code, a card keeps its
+# issuer digit, and "sharing a token" with a number means nothing. Applying the name
+# rule to them rejected every candidate and fell through to the "#1" suffix, which
+# turned a phone number into something that is not one.
+_FREE_TEXT_ENTITIES = frozenset({
+    "PERSON", "ORGANIZATION", "LOCATION", "NRP", "EMAIL_ADDRESS", "URL",
+})
+
 _PHONE_ENTITIES = frozenset({
     "PHONE_NUMBER", "RU_PHONE", "CN_PHONE", "JP_PHONE", "KR_PHONE",
 })
@@ -129,15 +138,38 @@ class SurrogateFactory:
         """Return a fresh surrogate for *entity*. Never returns a value twice."""
         for _ in range(64):
             candidate = self._draw(entity, original)
-            if candidate in self._issued or self._overlaps(candidate, original):
+            if candidate in self._issued:
+                continue
+            if entity in _FREE_TEXT_ENTITIES and self._overlaps(candidate, original):
+                continue
+            if candidate == original:
                 continue
             self._issued.add(candidate)
             return candidate
-        # Pools and Faker can both repeat; the suffix guarantees termination.
+        # Exhausted. A free-text value can carry a disambiguating suffix; a structured
+        # one cannot — "+49 30 12345678 #1" is not a phone number. Digits are nudged
+        # instead, which keeps the shape and still yields a value not issued before.
         n = self._bump(entity)
-        candidate = f"{self._draw(entity, original)} #{n}"
+        candidate = self._draw(entity, original)
+        if entity in _FREE_TEXT_ENTITIES:
+            candidate = f"{candidate} #{n}"
+        else:
+            candidate = self._nudge_digits(candidate, n)
         self._issued.add(candidate)
         return candidate
+
+    @staticmethod
+    def _nudge_digits(value: str, salt: int) -> str:
+        """Change the trailing digits of a structured value, preserving its shape."""
+        out = list(value)
+        changed = 0
+        for index in range(len(out) - 1, -1, -1):
+            if out[index].isdigit():
+                out[index] = str((int(out[index]) + salt + changed) % 10)
+                changed += 1
+                if changed >= 3:
+                    break
+        return "".join(out)
 
     # -- internals ----------------------------------------------------------
     @staticmethod
@@ -223,6 +255,65 @@ class SurrogateFactory:
         )
 
     @staticmethod
+    def _shape_like(original: str, generated: str) -> str:
+        """Lay the generated digits into the original's punctuation.
+
+        Faker picks a format at random, so "+7 900 123-45-67" could come back as
+        "+79001234567" — same information, different shape, which reads as noise both
+        to the model and to whoever reviews the outbound traffic. Keeping the
+        separators of the value being replaced costs nothing and keeps the sentence
+        looking like the sentence it was.
+        """
+        digits = [c for c in generated if c.isalnum()]
+        if not original or not digits:
+            return generated
+        needed = sum(1 for c in original if c.isalnum())
+        if not needed:
+            return generated
+
+        # An international prefix is kept as it stands. Replacing "+49 30 ..." with
+        # "+73 20 ..." invents a country that does not dial, which is a different
+        # kind of wrong from hiding whose number it was — the same reasoning that
+        # keeps a German IBAN German.
+        keep = 0
+        if original.startswith("+"):
+            for index, char in enumerate(original[1:4], start=1):
+                if not char.isdigit():
+                    break
+                keep = index
+        # keep == 0 means there is no dialling prefix to preserve; slicing to keep + 1
+        # would still capture the first character, which corrupted every IBAN.
+        prefix_digits = [c for c in original[: keep + 1] if c.isalnum()] if keep else []
+
+        while len(digits) < needed:
+            digits += digits
+        tail = iter(digits[: needed - len(prefix_digits)])
+        head = iter(prefix_digits)
+        out = []
+        taken = 0
+        for char in original:
+            if not char.isalnum():
+                out.append(char)
+                continue
+            out.append(next(head) if taken < len(prefix_digits) else next(tail))
+            taken += 1
+        return "".join(out)
+
+    @staticmethod
+    def _make_card(f, original: str) -> str:
+        """Card-shaped, same length, deliberately not Luhn-valid — see finance_patterns.
+
+        Keeping the issuer's leading digit preserves the shape without making the
+        result chargeable: the check digit is wrong by construction.
+        """
+        from .finance_patterns import make_unusable_card
+
+        digits = "".join(ch for ch in original if ch.isdigit())
+        length = len(digits) if 13 <= len(digits) <= 19 else 16
+        prefix = digits[0] if digits else "4"
+        return make_unusable_card(prefix + f.numerify("#" * (length - 1)), length)
+
+    @staticmethod
     def _make_lei(f) -> str:
         """An LEI Faker has no provider for, built so its own checksum validates."""
         from .finance_patterns import lei_check_digits
@@ -246,7 +337,7 @@ class SurrogateFactory:
             if entity == "EMAIL_ADDRESS":
                 return f.email()
             if entity in _PHONE_ENTITIES:
-                return f.phone_number()
+                return self._shape_like(original, f.phone_number())
             if entity == "IP_ADDRESS":
                 return f.ipv4()
             if entity == "URL":
@@ -254,13 +345,12 @@ class SurrogateFactory:
             if entity == "SWIFT_BIC":
                 return self._make_bic(f, original)
             if entity == "IBAN_CODE":
-                return self._make_iban(f, original)
+                # Grouped in fours is how an IBAN is written; the stand-in keeps that.
+                return self._shape_like(original, self._make_iban(f, original))
             if entity == "ABA_ROUTING":
                 return f.aba()
             if entity == "CREDIT_CARD":
-                # Luhn-valid by construction, like every other financial stand-in
-                # here: a card field holding a malformed number is corrupted data.
-                return f.credit_card_number()
+                return self._shape_like(original, self._make_card(f, original))
             if entity == "LEI":
                 return self._make_lei(f)
             if entity in _RU_CODE_BUILDERS:

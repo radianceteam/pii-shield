@@ -133,3 +133,31 @@ def test_a_german_iban_is_not_a_russian_bank_account():
     which the account pattern read as a Russian account — and then blocked."""
     shield = Shield(Policy.pattern_only("ru"), use_faker=False)
     assert "RU_BANK_ACCOUNT" not in {f.entity for f in shield.detect("IBAN DE89370400440532013000")}
+
+
+# --- the tiers must promise the same refusals -------------------------------
+@pytest.mark.parametrize("entity", ["CREDIT_CARD", "SECRET_API_KEY", "SECRET_JWT"])
+def test_both_tiers_refuse_the_same_things(entity):
+    """A tier decides what can be *detected*, not what is too dangerous to send.
+
+    Cards were blocked by the full policy and merely pseudonymized by the cheap one,
+    so the same number was refused or forwarded depending on which plan a customer
+    was on.
+    """
+    assert entity in Policy.for_language("ru").blocking_entities
+    assert entity in Policy.pattern_only("ru").blocking_entities
+
+
+@pytest.mark.parametrize("factory", [Policy.for_language, Policy.pattern_only])
+def test_entities_are_not_listed_twice(factory):
+    """IBAN belonged to two catalogues, so every consumer counted it twice."""
+    entities = factory("ru").entities
+    assert len(entities) == len(set(entities))
+
+
+def test_pattern_only_blocks_a_card_written_in_groups():
+    from pii_shield import BlockedError
+
+    shield = Shield(Policy.pattern_only("ru"), use_faker=False)
+    with pytest.raises(BlockedError, match="CREDIT_CARD"):
+        shield.anonymize("Оплата 4111 1111 1111 1111")

@@ -106,7 +106,13 @@ def valid_aba(value: str) -> bool:
 # ISO 7064 MOD 97-10 checksum and a country-specific length, which is exactly the
 # class the dependency-free tier is meant to cover — leaving it to Presidio meant a
 # deployment too small for that dependency sent every IBAN through untouched.
-IBAN_RE = re.compile(r"(?<![A-Z0-9])[A-Z]{2}\d{2}[A-Z0-9]{10,30}(?![A-Z0-9])")
+# Groups of four is how an IBAN appears on an invoice or in an email — the normal
+# form, not an edge case. The separators include the non-breaking and narrow
+# no-break spaces that word processors and mail clients insert.
+_IBAN_SEP = "[ \u00a0\u202f\u2007-]"
+IBAN_RE = re.compile(
+    rf"(?<![A-Z0-9])[A-Z]{{2}}\d{{2}}(?:{_IBAN_SEP}?[A-Z0-9]){{10,30}}(?![A-Z0-9])"
+)
 
 # Length per country, from the IBAN registry. A German IBAN is 22 characters; a
 # 22-character string starting "DE" that fails this table is not one.
@@ -124,9 +130,14 @@ IBAN_LENGTHS = {
 }
 
 
+def normalize_iban(value: str) -> str:
+    """Strip the grouping separators an IBAN is normally written with."""
+    return re.sub(_IBAN_SEP, "", value).upper()
+
+
 def valid_iban(value: str) -> bool:
     """Known country, right length for it, and the mod-97 checksum."""
-    value = value.replace(" ", "").upper()
+    value = normalize_iban(value)
     expected = IBAN_LENGTHS.get(value[:2])
     if expected is None or len(value) != expected:
         return False
@@ -205,6 +216,28 @@ def make_iban(country: str, body: str) -> str:
 def make_bic(country: str, bank: str, location: str, branch: str = "") -> str:
     """Build a BIC keeping the country of the value being replaced."""
     return f"{bank[:4].upper():X<4}{country.upper()}{location[:2].upper():X<2}{branch[:3].upper()}"
+
+
+def make_unusable_card(body: str, length: int = 16) -> str:
+    """A card-shaped number that deliberately fails Luhn.
+
+    Every other financial stand-in here is built to be valid, because a malformed
+    IBAN or BIC is corrupted data that the recipient's own validation rejects. A card
+    is the one place that reasoning inverts. A Luhn-valid replacement with a real
+    issuer prefix is, by construction, a number that could belong to somebody — it
+    can be charged, looked up, or collide with a live account. Passing validation is
+    the hazard, not the feature.
+
+    So the shape is kept — issuer prefix, right length, digits where digits go, so
+    the field still reads as a card and the sentence still makes sense — and the
+    check digit is wrong on purpose. Nothing downstream can act on it.
+    """
+    digits = (body + "0" * length)[:length]
+    for candidate in range(10):
+        number = digits[:-1] + str(candidate)
+        if not luhn_ok(number):
+            return number
+    return digits  # unreachable: at most one of ten candidates satisfies Luhn
 
 
 def lei_check_digits(prefix18: str) -> str:

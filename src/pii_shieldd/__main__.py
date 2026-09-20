@@ -16,7 +16,7 @@ AUTH_ENV = "PII_SHIELD_TOKEN"
 # Keys accepted in a config file, each mirroring a command-line flag.
 CONFIG_KEYS = frozenset({
     "host", "port", "language", "surrogate_language", "upstream", "allow_remote",
-    "download_models",
+    "download_models", "pattern_only",
 })
 
 
@@ -40,6 +40,18 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Enable the OpenAI-compatible proxy and forward to this base URL "
             "(e.g. https://api.openai.com/v1). Also settable via PII_SHIELD_UPSTREAM."
+        ),
+    )
+    parser.add_argument(
+        "--pattern-only",
+        action="store_true",
+        default=None,
+        help=(
+            "Run without Presidio and without a language model: national identifiers, "
+            "banking codes, payment cards and credentials only. Names, organizations "
+            "and places are not detected, and every response says so via "
+            "names_analyzed. Fits a container sized for the agent rather than for a "
+            "language model."
         ),
     )
     parser.add_argument(
@@ -68,6 +80,7 @@ DEFAULTS = {
     "surrogate_language": None,
     "allow_remote": False,
     "download_models": False,
+    "pattern_only": False,
 }
 
 
@@ -123,7 +136,20 @@ def build_app(args):
 
     from .app import create_app
 
-    policy = Policy.for_language(args.language)
+    pattern_only = bool(
+        getattr(args, "pattern_only", False)
+        or os.environ.get("PII_SHIELD_PATTERN_ONLY", "").lower() in ("1", "true", "yes")
+    )
+    if pattern_only:
+        policy = Policy.pattern_only(args.language)
+        print(
+            "pattern-only mode: no language model; names are not detected "
+            "(responses carry names_analyzed=false)",
+            file=sys.stderr,
+        )
+    else:
+        policy = Policy.for_language(args.language)
+
     surrogate = getattr(args, "surrogate_language", None) or os.environ.get(
         "PII_SHIELD_SURROGATE_LANGUAGE"
     )
