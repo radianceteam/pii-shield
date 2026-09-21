@@ -9,16 +9,21 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      # Each interpreter reports on its own; cancelling the rest on the first
+      # failure hides whether a problem is version-specific.
+      fail-fast: false
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
-      # No NER extra here: this job proves the package works, and stays honest about
-      # it, without a 500 MB model download. The NER tests skip themselves.
+      # No NER extra here. This is not only about avoiding a 500 MB download: it is
+      # the configuration the pattern-only tier actually runs in, so the job is what
+      # keeps the test suite from quietly depending on the heavy extra. It has caught
+      # exactly that once already.
       - run: uv pip install --system -e ".[dev,server,surrogates]"
       - run: ruff check .
       - run: pytest -q
@@ -26,9 +31,9 @@ jobs:
   test-ner:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: uv pip install --system -e ".[dev,ner,server,surrogates]"

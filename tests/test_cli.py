@@ -28,6 +28,16 @@ def settings(argv=None, config=None):
     return resolve(build_parser().parse_args(argv or []), config or {})
 
 
+def cheap(argv=None, config=None):
+    """Settings for a daemon that needs no pipeline.
+
+    Whether a route is mounted has nothing to do with which tier is running, and
+    building the full policy here made these tests require the NER extra by accident —
+    so they passed locally and failed in the job that installs the library alone.
+    """
+    return settings(["--pattern-only", *(argv or [])], config)
+
+
 def _paths(app) -> set[str]:
     """Every mounted path.
 
@@ -41,20 +51,20 @@ def _paths(app) -> set[str]:
 # --- route mounting ---------------------------------------------------------
 def test_proxy_is_not_mounted_without_upstream(monkeypatch):
     monkeypatch.delenv("PII_SHIELD_UPSTREAM", raising=False)
-    app = build_app(settings())
+    app = build_app(cheap())
     assert "/healthz" in _paths(app)
     assert "/v1/chat/completions" not in _paths(app)
 
 
 def test_upstream_flag_mounts_the_proxy(monkeypatch):
     monkeypatch.delenv("PII_SHIELD_UPSTREAM", raising=False)
-    app = build_app(settings(["--upstream", "https://api.openai.com/v1"]))
+    app = build_app(cheap(["--upstream", "https://api.openai.com/v1"]))
     assert "/v1/chat/completions" in _paths(app)
 
 
 def test_upstream_env_var_mounts_the_proxy(monkeypatch):
     monkeypatch.setenv("PII_SHIELD_UPSTREAM", "https://api.openai.com/v1")
-    assert "/v1/chat/completions" in _paths(build_app(settings()))
+    assert "/v1/chat/completions" in _paths(build_app(cheap()))
 
 
 def test_trailing_slash_on_upstream_is_normalized(monkeypatch):
@@ -70,7 +80,7 @@ def test_trailing_slash_on_upstream_is_normalized(monkeypatch):
         return real_create_app(shield, proxy_config=proxy_config)
 
     monkeypatch.setattr(app_module, "create_app", spy)
-    build_app(settings(["--upstream", "https://api.openai.com/v1/"]))
+    build_app(cheap(["--upstream", "https://api.openai.com/v1/"]))
     assert captured["upstream"] == "https://api.openai.com/v1"
 
 
@@ -175,7 +185,7 @@ def test_pattern_only_flag_builds_a_cheap_policy(monkeypatch):
     model could not start at all — the library supported the tier and the daemon
     did not."""
     monkeypatch.delenv("PII_SHIELD_UPSTREAM", raising=False)
-    app = build_app(settings(["--pattern-only"]))
+    app = build_app(cheap())
     from pii_shieldd.app import get_shield
 
     with TestClient(app):
@@ -187,7 +197,7 @@ def test_pattern_only_flag_builds_a_cheap_policy(monkeypatch):
 def test_pattern_only_via_environment(monkeypatch):
     monkeypatch.delenv("PII_SHIELD_UPSTREAM", raising=False)
     monkeypatch.setenv("PII_SHIELD_PATTERN_ONLY", "1")
-    app = build_app(settings())
+    app = build_app(cheap())
     from pii_shieldd.app import get_shield
 
     with TestClient(app):
@@ -202,5 +212,5 @@ def test_pattern_only_via_config_file(tmp_path):
 
 def test_healthz_admits_there_is_no_ner(monkeypatch):
     monkeypatch.delenv("PII_SHIELD_UPSTREAM", raising=False)
-    with TestClient(build_app(settings(["--pattern-only"]))) as client:
+    with TestClient(build_app(cheap())) as client:
         assert client.get("/healthz").json()["ner_ready"] is False

@@ -21,6 +21,17 @@ from pii_shield.engine.presidio_engine import (
 )
 
 
+@pytest.fixture
+def pinned_version(monkeypatch):
+    """The release version is read from the installed spaCy.
+
+    Tests about *where* a model is installed do not need spaCy present to say
+    something true, and requiring it made them fail in the job that installs the
+    library on its own — the configuration the cheap tier actually runs in.
+    """
+    monkeypatch.setattr(PresidioDetector, "model_release_version", staticmethod(lambda: "3.8.0"))
+
+
 def test_download_is_off_by_default():
     assert PresidioDetector("sv").download is False
     assert Shield(Policy.pattern_only("ru"), use_faker=False)._download_models is False
@@ -41,7 +52,7 @@ def test_candidate_models_fetches_when_enabled(monkeypatch):
     assert detector.candidate_models() == ["sv_core_news_sm"]
 
 
-def test_the_installer_is_told_which_interpreter_to_target(monkeypatch):
+def test_the_installer_is_told_which_interpreter_to_target(monkeypatch, pinned_version):
     """The whole point: never let the installer resolve the environment itself."""
     seen = {}
 
@@ -57,7 +68,7 @@ def test_the_installer_is_told_which_interpreter_to_target(monkeypatch):
     assert any("sv_core_news_sm" in str(part) for part in seen["command"])
 
 
-def test_it_falls_back_to_uv_when_pip_is_absent(monkeypatch):
+def test_it_falls_back_to_uv_when_pip_is_absent(monkeypatch, pinned_version):
     """`uv venv` creates environments without pip, which is common now."""
     attempts = []
 
@@ -74,7 +85,7 @@ def test_it_falls_back_to_uv_when_pip_is_absent(monkeypatch):
     assert attempts[-1] == "uv"
 
 
-def test_a_failed_download_returns_none_rather_than_half_working(monkeypatch):
+def test_a_failed_download_returns_none_rather_than_half_working(monkeypatch, pinned_version):
     monkeypatch.setattr(
         subprocess, "run",
         lambda command, **k: (_ for _ in ()).throw(subprocess.CalledProcessError(1, command)),
@@ -89,7 +100,8 @@ def test_the_url_is_pinned_to_the_publisher():
 
 
 def test_release_version_follows_the_installed_spacy():
-    import spacy
+    """This one genuinely needs spaCy, and says so instead of erroring."""
+    spacy = pytest.importorskip("spacy")
 
     major, minor = spacy.__version__.split(".")[:2]
     assert PresidioDetector("sv").model_release_version() == f"{major}.{minor}.0"
