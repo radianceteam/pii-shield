@@ -417,17 +417,41 @@ pii-shieldd --port 8099 --upstream https://api.openai.com/v1
 ```
 
 ```
-POST /v1/chat/completions   # anonymize → forward upstream → restore, streaming included
-GET  /v1/models             # passthrough
+POST /v1/chat/completions       # OpenAI, streaming included
+POST /v1/messages               # Anthropic Messages, streaming included
+POST /v1/messages/count_tokens  # cleaned, not passed through — see below
+GET  /v1/models                 # passthrough
 ```
+
+Both wire formats are handled, so an unmodified client of either SDK works:
+
+```python
+anthropic.Anthropic(base_url="http://127.0.0.1:8099", api_key=...)   # x-api-key
+openai.OpenAI(base_url="http://127.0.0.1:8099/v1", api_key=...)      # bearer
+```
+
+On the Anthropic route three places carry identifying data and all three are cleaned:
+the top-level **`system`** prompt (where an agent's operator details live), **message
+content** blocks, and **`tool_result.content`** — whatever the agent's tool returned,
+which in practice is the densest personal data in the request. Arguments in
+**`tool_use.input`** are cleaned on the way up and restored on the way back, because a
+tool called with a stand-in name executes against a person who does not exist. Errors
+use Anthropic's envelope on that route and OpenAI's on the other; the SDKs parse
+responses against their own schemas and raise on the wrong one.
+
+`/v1/messages/count_tokens` takes a **full prompt**. Proxying it untouched "for
+compatibility" would hand the provider exactly the text the shield exists to withhold,
+and it would look like the endpoint worked — so it is cleaned by the same path as
+`/v1/messages` before the count is taken.
 
 The client sends an ordinary chat completion and gets an ordinary one back; only the
 provider sees stand-ins. Streaming works too — a surrogate split across SSE chunks is
 reassembled before it is restored, so the output never depends on how the stream was
 chunked.
 
-`Authorization` is forwarded upstream untouched, because the caller owns that
-credential and this proxy should never need to hold it. The sidecar's own gate is a
+`Authorization` — and `x-api-key`, `anthropic-version`, `anthropic-beta` — is
+forwarded upstream untouched, because the caller owns that credential and this proxy
+should never need to hold it. The sidecar's own gate is a
 separate header, `X-Pii-Shield-Token`.
 
 A blocked request returns **400** in OpenAI's error envelope and is never forwarded. The

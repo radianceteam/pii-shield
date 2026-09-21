@@ -34,6 +34,9 @@ from pii_shield.languages import UnsupportedLanguageError
 
 from .app import AUTH_ENV, get_shield, token_matches
 from .wire import StreamRestorer, anonymize_messages, deanonymize_response
+from .wire_anthropic import AnthropicStreamRestorer
+from .wire_anthropic import anonymize_request as anthropic_anonymize
+from .wire_anthropic import deanonymize_response as anthropic_deanonymize
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +104,13 @@ def create_proxy_router(config: ProxyConfig | None = None) -> APIRouter:
             headers["authorization"] = f"Bearer {cfg.upstream_key}"
         # Hop-by-hop and length headers are rebuilt by httpx; copying them corrupts
         # the forwarded request.
-        for passthrough in ("openai-organization", "openai-project", "anthropic-version"):
+        # Anthropic authenticates with x-api-key rather than a bearer token, and
+        # requires a version header. Both travel upstream untouched: the rule that the
+        # shield never holds the caller's credential is the same either way.
+        for passthrough in (
+            "openai-organization", "openai-project",
+            "x-api-key", "anthropic-version", "anthropic-beta",
+        ):
             if passthrough in request.headers:
                 headers[passthrough] = request.headers[passthrough]
         return headers
@@ -186,6 +195,113 @@ def create_proxy_router(config: ProxyConfig | None = None) -> APIRouter:
             _drop(shield, session_id)
         return JSONResponse(status_code=response.status_code, content=body)
 
+    @router.post("/v1/messages")
+    async def anthropic_messages(request: Request, shield: ShieldDep):
+        """Anthropic Messages, same treatment as chat completions.
+
+        The body is walked differently — see wire_anthropic for why — but the contract
+        is identical: nothing identifying leaves, nothing unexamined leaves either,
+        and the caller's credential passes straight through.
+        """
+        try:
+            payload = await request.json()
+        except Exception:
+            return _anthropic_error(400, "request body is not valid JSON", "invalid_request_error")
+        if not isinstance(payload, dict) or not isinstance(payload.get("messages"), list):
+            return _anthropic_error(400, "missing 'messages'", "invalid_request_error")
+
+        try:
+            policy = per_request_policy(request, shield)
+        except (UnsupportedLanguageError, ValueError) as exc:
+            return _anthropic_error(400, str(exc), "invalid_request_error")
+
+        try:
+            forwarded, session_id, _changed, _names = anthropic_anonymize(
+                shield, payload, policy=policy
+            )
+        except BlockedError as exc:
+            kinds = sorted({f.entity for f in exc.findings})
+            return _anthropic_error(
+                400,
+                f"pii-shield blocked this request: {', '.join(kinds)}",
+                "invalid_request_error",
+            )
+        except (RedactionUnavailableError, NerUnavailableError) as exc:
+            return _anthropic_error(503, f"pii-shield unavailable: {exc}", "api_error")
+
+        headers = upstream_headers(request)
+        url = f"{cfg.upstream}/messages"
+
+        if payload.get("stream"):
+            return StreamingResponse(
+                _anthropic_stream(shield, cfg, url, forwarded, headers, session_id),
+                media_type="text/event-stream",
+                headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
+            )
+
+        try:
+            async with httpx.AsyncClient(timeout=cfg.timeout) as client:
+                response = await client.post(url, json=forwarded, headers=headers)
+        except httpx.HTTPError as exc:
+            _drop(shield, session_id)
+            return _anthropic_error(502, f"upstream unreachable: {exc}", "api_error")
+
+        if response.status_code >= 400:
+            _drop(shield, session_id)
+            return JSONResponse(status_code=response.status_code, content=_json_or_text(response))
+
+        body = _json_or_text(response)
+        if session_id:
+            body = anthropic_deanonymize(shield, body, session_id)
+            _drop(shield, session_id)
+        return JSONResponse(status_code=response.status_code, content=body)
+
+    @router.post("/v1/messages/count_tokens")
+    async def anthropic_count_tokens(request: Request, shield: ShieldDep):
+        """Counts tokens for a full prompt — so the prompt is cleaned first.
+
+        Forwarding this one untouched "for compatibility" would send the provider the
+        very text the shield exists to withhold, and it would look like the endpoint
+        worked. The count is taken on the pseudonymized text; stand-ins are chosen to
+        resemble what they replace, so the number stays representative.
+        """
+        try:
+            payload = await request.json()
+        except Exception:
+            return _anthropic_error(400, "request body is not valid JSON", "invalid_request_error")
+        if not isinstance(payload, dict):
+            return _anthropic_error(400, "body must be an object", "invalid_request_error")
+
+        try:
+            policy = per_request_policy(request, shield)
+            forwarded, session_id, _changed, _names = anthropic_anonymize(
+                shield, payload, policy=policy
+            )
+        except BlockedError as exc:
+            kinds = sorted({f.entity for f in exc.findings})
+            return _anthropic_error(
+                400,
+                f"pii-shield blocked this request: {', '.join(kinds)}",
+                "invalid_request_error",
+            )
+        except (UnsupportedLanguageError, ValueError) as exc:
+            return _anthropic_error(400, str(exc), "invalid_request_error")
+        except (RedactionUnavailableError, NerUnavailableError) as exc:
+            return _anthropic_error(503, f"pii-shield unavailable: {exc}", "api_error")
+
+        try:
+            async with httpx.AsyncClient(timeout=cfg.timeout) as client:
+                response = await client.post(
+                    f"{cfg.upstream}/messages/count_tokens",
+                    json=forwarded,
+                    headers=upstream_headers(request),
+                )
+        except httpx.HTTPError as exc:
+            return _anthropic_error(502, f"upstream unreachable: {exc}", "api_error")
+        finally:
+            _drop(shield, session_id)
+        return JSONResponse(status_code=response.status_code, content=_json_or_text(response))
+
     @router.get("/v1/models")
     async def models(request: Request):
         """Plain passthrough — clients probe this before they will talk to a base URL."""
@@ -206,6 +322,19 @@ def _json_or_text(response: httpx.Response) -> Any:
         return response.json()
     except ValueError:
         return {"error": {"message": response.text, "type": "upstream_error", "code": "non_json"}}
+
+
+def _anthropic_error(status: int, message: str, err_type: str) -> JSONResponse:
+    """Anthropic's error envelope.
+
+    The OpenAI one is a different shape, and the Anthropic SDK parses the response
+    against its own schema — handed the wrong envelope it raises on the parse rather
+    than surfacing the message, so the caller never learns why the request stopped.
+    """
+    return JSONResponse(
+        status_code=status,
+        content={"type": "error", "error": {"type": err_type, "message": message}},
+    )
 
 
 def _drop(shield: Shield, session_id: str | None) -> None:
@@ -267,6 +396,67 @@ async def _stream(
         yield _sse({"error": {"message": f"upstream stream failed: {exc}",
                               "type": "pii_shield_error", "code": "upstream"}})
         yield f"data: {SSE_DONE}\n\n".encode()
+    finally:
+        _drop(shield, session_id)
+
+
+async def _anthropic_stream(
+    shield: Shield,
+    cfg: ProxyConfig,
+    url: str,
+    payload: dict,
+    headers: dict[str, str],
+    session_id: str | None,
+) -> AsyncIterator[bytes]:
+    """Re-emit Anthropic's SSE stream with stand-ins restored in flight.
+
+    Anthropic sends ``event:`` lines alongside ``data:`` lines; the event lines are
+    forwarded untouched. A tail withheld mid-name is released just before the block
+    closes, as a delta of the same kind it was held from, so the client never sees a
+    stand-in and never loses the last characters of an answer.
+    """
+    mapping = shield.store.mapping(session_id) if session_id else {}
+    restorer = AnthropicStreamRestorer(mapping)
+    try:
+        async with httpx.AsyncClient(timeout=cfg.timeout) as client:
+            async with client.stream("POST", url, json=payload, headers=headers) as response:
+                if response.status_code >= 400:
+                    raw = await response.aread()
+                    yield _sse({"type": "error", "error": {
+                        "type": "api_error", "message": raw.decode("utf-8", "replace")}})
+                    return
+
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+                    if not line.startswith("data:"):
+                        yield f"{line}\n".encode()
+                        continue
+                    data = line[len("data:") :].strip()
+                    try:
+                        event = json.loads(data)
+                    except ValueError:
+                        yield f"data: {data}\n\n".encode()
+                        continue
+
+                    if event.get("type") == "content_block_stop":
+                        index = event.get("index", 0)
+                        text_tail, json_tail = restorer.flush_for(index)
+                        if text_tail:
+                            yield _sse({"type": "content_block_delta", "index": index,
+                                        "delta": {"type": "text_delta", "text": text_tail}})
+                        if json_tail:
+                            yield _sse({"type": "content_block_delta", "index": index,
+                                        "delta": {"type": "input_json_delta",
+                                                  "partial_json": json_tail}})
+                        yield _sse(event)
+                        continue
+
+                    yield _sse(restorer.restore_event(event))
+    except httpx.HTTPError as exc:
+        logger.warning("pii-shield anthropic stream failed: %s", exc)
+        yield _sse({"type": "error", "error": {
+            "type": "api_error", "message": f"upstream stream failed: {exc}"}})
     finally:
         _drop(shield, session_id)
 

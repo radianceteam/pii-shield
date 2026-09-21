@@ -117,9 +117,13 @@ LOCAL_NATIONAL: dict[str, tuple[str, ...]] = {
 
 # Detected by the NER pipeline (or Presidio's language-agnostic recognizers) rather
 # than by a national pattern. Available for every language.
+# What Presidio is asked for. IBAN and payment cards used to be here and are not any
+# more: both moved to this project's own layer, and leaving them listed meant Presidio
+# was queried for entities it no longer served, while the noise filters meant for NER
+# output were applied to a checksum-verified match.
 GLOBAL_NER_ENTITIES = (
     "PERSON", "ORGANIZATION", "LOCATION", "EMAIL_ADDRESS", "PHONE_NUMBER",
-    "CREDIT_CARD", "IBAN_CODE", "IP_ADDRESS", "URL", "DATE_TIME", "NRP",
+    "IP_ADDRESS", "URL", "DATE_TIME", "NRP",
 )
 
 # ---------------------------------------------------------------------------
@@ -147,7 +151,10 @@ PRESIDIO_PATTERN_ENTITIES = frozenset(
 
 # Institution and legal-entity identifier codes. Language-independent, so they are
 # available everywhere rather than living in a national profile.
-FINANCE_ENTITIES = ("SWIFT_BIC", "IBAN_CODE", "ABA_ROUTING", "LEI")
+# The catalogue of banking entities. CREDIT_CARD belongs here now that Presidio no
+# longer serves it; it used to reach the catalogue through the NER list, and
+# removing it from there dropped cards out of every policy.
+FINANCE_ENTITIES = ("SWIFT_BIC", "IBAN_CODE", "ABA_ROUTING", "LEI", "CREDIT_CARD")
 
 # Of those, IBAN is Presidio's recognizer; the other three are this project's own.
 # CREDIT_CARD is here rather than in the Presidio tier because Presidio only
