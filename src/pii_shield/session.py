@@ -31,6 +31,8 @@ class _Session:
     # whole session, so the model sees a consistent cast of characters instead of a
     # new name every time the same person is mentioned.
     forward: dict[str, str] = field(default_factory=dict)
+    # Stand-ins that may come back in another grammatical form.
+    inflectable: set[str] = field(default_factory=set)
 
 
 class SessionStore:
@@ -77,17 +79,22 @@ class SessionStore:
             return len(self._sessions)
 
     # -- mapping ------------------------------------------------------------
-    def remember(self, session_id: str, original: str, surrogate: str) -> None:
+    def remember(
+        self, session_id: str, original: str, surrogate: str, *, inflectable: bool = False
+    ) -> None:
         with self._lock:
             sess = self._get_locked(session_id)
             if sess is None:
                 return
             sess.reverse[surrogate] = original
             sess.forward[original] = surrogate
+            if inflectable:
+                sess.inflectable.add(surrogate)
             while len(sess.reverse) > self._max_entries:
                 oldest = next(iter(sess.reverse))
                 stale = sess.reverse.pop(oldest)
                 sess.forward.pop(stale, None)
+                sess.inflectable.discard(oldest)
 
     def surrogate_for(self, session_id: str, original: str) -> str | None:
         """Return the surrogate already assigned to *original* in this session."""
@@ -100,6 +107,14 @@ class SessionStore:
         with self._lock:
             sess = self._get_locked(session_id)
             return {} if sess is None else dict(sess.reverse)
+
+    def inflectable_pairs(self, session_id: str) -> list[tuple[str, str]]:
+        """(stand-in, original) for the ones that may return in another form."""
+        with self._lock:
+            sess = self._get_locked(session_id)
+            if sess is None:
+                return []
+            return [(s, sess.reverse[s]) for s in sess.inflectable if s in sess.reverse]
 
     def pop_session(self, session_id: str) -> dict[str, str]:
         """Take the mapping and delete it — the intended end of a request round-trip."""

@@ -13,15 +13,27 @@ import pytest
 
 from pii_shield import Policy, Shield
 from pii_shield.engine.presidio_engine import NerUnavailableError
-from pii_shield.languages import LOCAL_ENTITIES, NER_MODEL_ENTITIES, PRESIDIO_ENTITIES
+from pii_shield.languages import (
+    CONTACT_FALLBACK_ENTITIES,
+    LOCAL_ENTITIES,
+    NER_MODEL_ENTITIES,
+    PRESIDIO_ENTITIES,
+)
 
 from .conftest import StubDetector
 
 
 # --- the classification itself ----------------------------------------------
 def test_tiers_do_not_overlap():
+    """One deliberate exception: email and phone are served by both.
+
+    Presidio validates numbers against real numbering plans and a regex cannot, so the
+    full tier keeps its recognizers — but leaving them out of the cheap tier meant a
+    customer writing in anything but the four languages whose national identifiers it
+    knows got almost no protection at all.
+    """
     assert not NER_MODEL_ENTITIES & PRESIDIO_ENTITIES
-    assert not PRESIDIO_ENTITIES & LOCAL_ENTITIES
+    assert PRESIDIO_ENTITIES & LOCAL_ENTITIES == CONTACT_FALLBACK_ENTITIES
     assert not NER_MODEL_ENTITIES & LOCAL_ENTITIES
 
 

@@ -9,7 +9,7 @@ overlapping a verified 身份证 loses regardless of the score Presidio assigned
 from __future__ import annotations
 
 from ..types import Finding
-from . import asia_patterns, finance_patterns, ru_patterns
+from . import asia_patterns, contact_patterns, finance_patterns, ru_patterns
 from .presidio_engine import NER_ENTITIES, NerUnavailableError, PresidioDetector
 from .surrogates import SurrogateFactory
 
@@ -22,6 +22,7 @@ __all__ = [
     "PresidioDetector",
     "SurrogateFactory",
     "asia_patterns",
+    "contact_patterns",
     "finance_patterns",
     "ru_patterns",
 ]

@@ -142,9 +142,17 @@ NER_MODEL_ENTITIES = frozenset({"PERSON", "ORGANIZATION", "LOCATION", "NRP"})
 # 2. Presidio's pattern, checksum and context recognizers. They need
 #    ``presidio-analyzer`` installed, but no language model: a blank spaCy pipeline
 #    (a few megabytes, shipped with spaCy itself) is enough to run them.
+# Email and phone appear in both tiers: Presidio validates numbers against real
+# numbering plans, which a regex cannot, so the full tier keeps its recognizers. The
+# dependency-free layer covers them only when Presidio is absent — otherwise the cheap
+# tier protected almost nothing for anyone not writing in one of the four languages
+# whose national identifiers it knows.
 PRESIDIO_PATTERN_ENTITIES = frozenset(
     {"EMAIL_ADDRESS", "PHONE_NUMBER", "IP_ADDRESS", "URL", "DATE_TIME"}
 )
+
+# Served by this project's own patterns when Presidio is not installed.
+CONTACT_FALLBACK_ENTITIES = frozenset({"EMAIL_ADDRESS", "PHONE_NUMBER"})
 
 # 3. Everything else is this project's own regex and checksum layers, which need
 #    neither Presidio nor spaCy. Computed below, once the national tables exist.
@@ -181,6 +189,7 @@ class LanguageProfile:
     faker_locale: str | None = None
     label_map: dict[str, str] = field(default_factory=dict)
     min_ner_span: int = 3
+    inflects_names: bool = False
     allowlist: tuple[str, ...] = ()
     presidio_national: tuple[str, ...] = ()
     local_national: tuple[str, ...] = ()
@@ -220,6 +229,11 @@ _FAKER_LOCALES = {
 # Korean, so the default floor of 3 would discard exactly what must be caught.
 _MIN_NER_SPAN = {"zh": 2, "ja": 2, "ko": 2}
 
+# Languages that decline proper names. A stand-in goes out in the nominative and comes
+# back in whatever case the sentence needed, so an exact-match restore misses it and
+# the caller reads an invented person as a real one.
+_INFLECTED = frozenset({"ru", "uk", "pl", "hr", "sl", "lt", "el", "fi", "mk"})
+
 # Pipelines whose tagset Presidio does not know.
 _LABEL_MAPS = {"ko": KO_LABEL_MAP, "sv": SV_LABEL_MAP}
 
@@ -234,6 +248,7 @@ def _build_profiles() -> dict[str, LanguageProfile]:
             faker_locale=_FAKER_LOCALES.get(code),
             label_map=dict(_LABEL_MAPS.get(code, {})),
             min_ner_span=_MIN_NER_SPAN.get(code, 3),
+            inflects_names=code in _INFLECTED,
             allowlist=UNIVERSAL_ALLOWLIST + PROFILE_ALLOWLISTS.get(code, ()),
             presidio_national=PRESIDIO_NATIONAL.get(code, ()),
             local_national=LOCAL_NATIONAL.get(code, ()),
@@ -275,7 +290,7 @@ PRESIDIO_ENTITIES = _presidio_entities()
 
 def _local_entities() -> frozenset[str]:
     """Tier 3: detected by this project's own patterns, no third-party dependency."""
-    out = set(LOCAL_FINANCE_ENTITIES) | set(SECRET_ENTITIES)
+    out = set(LOCAL_FINANCE_ENTITIES) | set(SECRET_ENTITIES) | set(CONTACT_FALLBACK_ENTITIES)
     for national in LOCAL_NATIONAL.values():
         out |= set(national)
     return frozenset(out)

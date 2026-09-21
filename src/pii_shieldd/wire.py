@@ -128,13 +128,16 @@ class StreamRestorer:
     buffer would splice a held-back name into the wrong field.
     """
 
-    def __init__(self, mapping: dict[str, str]) -> None:
+    def __init__(
+        self, mapping: dict[str, str], inflected_pairs: list[tuple[str, str]] | None = None
+    ) -> None:
         self._mapping = mapping
+        self._inflected = inflected_pairs or []
         self._streams: dict[tuple, StreamDeanonymizer] = {}
 
     def _for(self, key: tuple) -> StreamDeanonymizer:
         if key not in self._streams:
-            self._streams[key] = StreamDeanonymizer(self._mapping)
+            self._streams[key] = StreamDeanonymizer(self._mapping, self._inflected)
         return self._streams[key]
 
     def restore_chunk(self, chunk: Any) -> Any:

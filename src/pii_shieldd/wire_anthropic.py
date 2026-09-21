@@ -152,16 +152,19 @@ class AnthropicStreamRestorer:
     a JSON fragment at a time, which is still just characters to reassemble.
     """
 
-    def __init__(self, mapping: dict[str, str]) -> None:
+    def __init__(
+        self, mapping: dict[str, str], inflected_pairs: list[tuple[str, str]] | None = None
+    ) -> None:
         from pii_shield.streaming import StreamDeanonymizer
 
         self._mapping = mapping
+        self._inflected = inflected_pairs or []
         self._factory = StreamDeanonymizer
         self._streams: dict[tuple, Any] = {}
 
     def _for(self, key: tuple):
         if key not in self._streams:
-            self._streams[key] = self._factory(self._mapping)
+            self._streams[key] = self._factory(self._mapping, self._inflected)
         return self._streams[key]
 
     def restore_event(self, event: Any) -> Any:

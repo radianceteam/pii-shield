@@ -191,8 +191,8 @@ with three very different footprints:
 
 | Tier | Entities | Needs |
 |---|---|---|
-| Own patterns | national identifiers (INN, SNILS, OGRN, BIK, 身份证, マイナンバー, 주민등록번호), banking codes (**IBAN**, SWIFT/BIC, ABA, LEI), **payment cards**, credentials | nothing — regex and checksums |
-| Presidio recognizers | email, phone, IP, URL, dates, and the national IDs Presidio ships for en/es/it/pl | `pii-shield[ner]`, but **no language model**: a blank pipeline is enough |
+| Own patterns | national identifiers (INN, SNILS, OGRN, BIK, 身份证, マイナンバー, 주민등록번호), banking codes (IBAN, SWIFT/BIC, ABA, LEI), payment cards, credentials, **email and international phone numbers** | nothing — regex and checksums |
+| Presidio recognizers | IP, URL, dates, the national IDs Presidio ships for en/es/it/pl, and email and phone when it is installed — it checks numbers against real numbering plans and a regex cannot | `pii-shield[ner]`, but **no language model**: a blank pipeline is enough |
 | Language model | PERSON, ORGANIZATION, LOCATION, NRP | a spaCy pipeline, ~1 GB resident |
 
 ```bash
@@ -574,6 +574,50 @@ An nginx template is in [`deploy/litellm/nginx.conf.example`](deploy/litellm/ngi
 install it as its own file in `sites-available` rather than appending to the default
 server block, then `certbot --nginx -d <your-host>`. The DNS record must resolve to the
 host first, or the HTTP-01 challenge fails.
+
+## Inflected languages
+
+A stand-in leaves in the nominative and comes back in whatever case the sentence
+needed. Exact-match restoring misses that: hand a model "Иванна Олеговна Горбунова"
+and it replies "с Иванной Олеговной Горбуновой", which an exact restore leaves alone —
+so the caller reads an invented person and takes them for real. That is worse than no
+restore at all, because it looks like it worked.
+
+Restoring therefore matches on the stem for free-text names in the languages that
+decline them (ru, uk, pl, hr, sl, lt, el, fi, mk). Whole names are matched before their
+parts, and the loose pass runs only where the safe one found nothing; a single word maps
+to the word in the same position, so a lone surname does not drag a three-part name into
+the middle of a sentence. Identifiers are never matched loosely — a checksummed value
+comes back verbatim or not at all. Streaming does the same, withholding a window wide
+enough for the longest name plus its endings.
+
+Two limits worth knowing. Stem matching cannot tell an inflection of the stand-in from a
+different name that shares its stem — "Игнатов" looks like a form of "Игнатьев" to any
+rule short of a morphological analyser — so an unrelated name may occasionally be
+replaced when the full name is absent from the text. And the stand-in is inserted in the
+nominative regardless of the case the sentence wanted, which leaves the text the model
+reads slightly ungrammatical; agreeing it with the original would need a morphological
+generator and is not done today.
+
+## Memory
+
+A language pipeline is around a gigabyte resident. Loading a second one inside a
+container sized for one does not degrade: the kernel kills the process, and an agent
+that was protected a moment ago has no shield at all. Being OOM-killed is not failing
+closed — it is failing gone.
+
+So the room is measured before a load, against the cgroup limit (or
+`PII_SHIELD_MEMORY_LIMIT_BYTES`). The language the deployment was configured for is
+**not** evicted by default: dropping it to serve one foreign request means reloading it
+for the next, at about forty seconds each way. Other pipelines are dropped
+least-recently-used, and when even that would not be enough the load is refused —
+before anything is evicted, so a working pipeline is never destroyed for an attempt that
+was going to fail regardless.
+
+```python
+Shield(policy, max_loaded_languages=2)   # cap regardless of memory
+Shield(policy, evict_primary=True)       # trade reload cost for the extra language
+```
 
 ## Design rules
 

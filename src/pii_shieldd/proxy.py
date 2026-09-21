@@ -352,7 +352,8 @@ async def _stream(
 ) -> AsyncIterator[bytes]:
     """Re-emit the upstream SSE stream with surrogates restored in flight."""
     mapping = shield.store.mapping(session_id) if session_id else {}
-    restorer = StreamRestorer(mapping)
+    pairs = shield.store.inflectable_pairs(session_id) if session_id else []
+    restorer = StreamRestorer(mapping, pairs)
     try:
         async with httpx.AsyncClient(timeout=cfg.timeout) as client:
             async with client.stream("POST", url, json=payload, headers=headers) as response:
@@ -416,7 +417,8 @@ async def _anthropic_stream(
     stand-in and never loses the last characters of an answer.
     """
     mapping = shield.store.mapping(session_id) if session_id else {}
-    restorer = AnthropicStreamRestorer(mapping)
+    pairs = shield.store.inflectable_pairs(session_id) if session_id else []
+    restorer = AnthropicStreamRestorer(mapping, pairs)
     try:
         async with httpx.AsyncClient(timeout=cfg.timeout) as client:
             async with client.stream("POST", url, json=payload, headers=headers) as response:

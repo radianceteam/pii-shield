@@ -201,6 +201,11 @@ class PresidioDetector:
         fetched = self.fetch_model()
         return [fetched] if fetched else []
 
+    def planned_model(self) -> str | None:
+        """The pipeline a load would choose, without loading it."""
+        candidates = self.candidate_models()
+        return candidates[0] if candidates else None
+
     def _build(self):
         from presidio_analyzer import AnalyzerEngine
         from presidio_analyzer.nlp_engine import NlpEngineProvider

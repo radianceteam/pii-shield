@@ -12,6 +12,9 @@ a surrogate that is a suffix of another one cannot be split across the emit boun
 
 from __future__ import annotations
 
+# Mirrors restore._MAX_ENDING; imported lazily there to keep this module dependency-free.
+_MAX_INFLECTION_ENDING = 6
+
 
 class StreamDeanonymizer:
     """Feed chunks in, get safely-restored text out.
@@ -20,13 +23,24 @@ class StreamDeanonymizer:
     tail, which would otherwise be silently dropped.
     """
 
-    def __init__(self, mapping: dict[str, str]) -> None:
+    def __init__(
+        self, mapping: dict[str, str], inflected_pairs: list[tuple[str, str]] | None = None
+    ) -> None:
         self._mapping = mapping
         # Longest first: with surrogates "Thomas" and "Thomas Müller", matching the
         # short one first would leave " Müller" stranded in the output.
         self._keys = sorted(mapping, key=len, reverse=True)
         self._max_len = max((len(k) for k in mapping), default=0)
         self._pending = ""
+
+        # An inflected stand-in cannot be recognised by a prefix, because the ending
+        # that identifies it has not arrived yet. Those streams withhold a fixed window
+        # instead — long enough for the longest name plus the endings the language can
+        # add — and run the same matcher the non-streaming path uses. Without this a
+        # streaming client, which is how agents actually run, keeps the whole bug.
+        self._inflected = inflected_pairs or []
+        longest = max((len(s) for s, _ in self._inflected), default=0)
+        self._window = longest + 8 * _MAX_INFLECTION_ENDING if self._inflected else 0
 
     @property
     def pending(self) -> str:
@@ -36,13 +50,39 @@ class StreamDeanonymizer:
     def feed(self, text: str) -> str:
         if not self._mapping or not text:
             return text
+        if self._inflected:
+            return self._feed_windowed(text)
         emitted, self._pending = self._consume(self._pending + text, final=False)
         return emitted
+
+    def _feed_windowed(self, text: str) -> str:
+        """Withhold a window, then restore everything safely behind it."""
+        self._pending += text
+        if len(self._pending) <= self._window:
+            return ""
+        cut = len(self._pending) - self._window
+        # Never cut inside a word: a name split across the boundary would be missed on
+        # one side and mangled on the other.
+        space = self._pending.rfind(" ", 0, cut)
+        if space <= 0:
+            return ""
+        emit, self._pending = self._pending[:space], self._pending[space:]
+        return self._restore(emit)
+
+    def _restore(self, text: str) -> str:
+        from .restore import restore
+
+        for key in self._keys:
+            text = text.replace(key, self._mapping[key])
+        return restore(text, self._inflected)
 
     def flush(self) -> str:
         """Release the tail. Anything still partial was never a surrogate after all."""
         if not self._pending:
             return ""
+        if self._inflected:
+            tail, self._pending = self._pending, ""
+            return self._restore(tail)
         emitted, self._pending = self._consume(self._pending, final=True)
         return emitted
 

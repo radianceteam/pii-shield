@@ -17,6 +17,7 @@ from enum import StrEnum
 from pydantic import BaseModel, Field, model_validator
 
 from .languages import (
+    CONTACT_FALLBACK_ENTITIES,
     FINANCE_ENTITIES,
     GLOBAL_NER_ENTITIES,
     LOCAL_ENTITIES,
@@ -260,11 +261,16 @@ class Policy(BaseModel):
     def requires_presidio(self) -> bool:
         """True if this policy needs ``presidio-analyzer`` installed.
 
-        Presidio's pattern and checksum recognizers (email, cards, IBAN, IP, URL and
-        the national ones it ships) run on a blank pipeline, so this can be true while
-        :meth:`requires_ner` is false.
+        Presidio's pattern recognizers (IP, URL, dates and the national ones it ships)
+        run on a blank pipeline, so this can be true while :meth:`requires_ner` is false.
+
+        Email and phone are excluded: this project can detect both on its own, so
+        wanting them does not oblige a deployment to install Presidio. When Presidio
+        *is* present it serves them, because it validates numbers against real
+        numbering plans and a regex cannot.
         """
-        return bool(self.active_entities & (PRESIDIO_ENTITIES | NER_MODEL_ENTITIES))
+        needs_presidio = (PRESIDIO_ENTITIES - CONTACT_FALLBACK_ENTITIES) | NER_MODEL_ENTITIES
+        return bool(self.active_entities & needs_presidio)
 
     @property
     def local_only(self) -> bool:

@@ -6,7 +6,10 @@ raises. It never returns partially-filtered text as if it were clean.
 
 from __future__ import annotations
 
+import gc
 import hashlib
+import logging
+import time
 
 from . import secrets as secrets_layer
 from .engine import (
@@ -14,11 +17,15 @@ from .engine import (
     NerUnavailableError,
     PresidioDetector,
     SurrogateFactory,
+    contact_patterns,
     finance_patterns,
     merge_findings,
     national_scan,
 )
+from .languages import get_profile
+from .memory import assess, estimated_load_bytes
 from .policy import Policy, Scope
+from .restore import restore as restore_inflected
 from .session import SessionStore
 from .types import (
     Action,
@@ -27,6 +34,11 @@ from .types import (
     Finding,
     RedactionUnavailableError,
 )
+
+logger = logging.getLogger(__name__)
+
+# Entities whose stand-in is free text and can therefore be declined.
+_INFLECTABLE_ENTITIES = frozenset({"PERSON", "ORGANIZATION", "LOCATION", "NRP"})
 
 _MISSING = object()
 
@@ -42,6 +54,8 @@ class Shield:
         detector: PresidioDetector | None = None,
         use_faker: bool = True,
         download_models: bool = False,
+        max_loaded_languages: int | None = None,
+        evict_primary: bool = False,
     ) -> None:
         self.policy = policy or Policy.ru_default()
         self.store = store or SessionStore()
@@ -55,6 +69,19 @@ class Shield:
         # different language than the shield was configured with. Holding a single
         # detector meant an English request was scanned by the Russian pipeline and
         # came back clean, which is the exact failure this project exists to prevent.
+        # A pipeline is about a gigabyte resident. Loading a second one inside a
+        # container sized for one gets the process killed, which leaves the agent with
+        # no shield at all — worse than a refusal. Least-recently-used pipelines are
+        # dropped to make room, and when that is not enough the load is refused.
+        self._max_languages = max_loaded_languages
+        # The language the deployment was configured for is not evicted by default.
+        # Dropping it to serve one request in another language means reloading it for
+        # the next one, at forty seconds a time — a pod that alternates would spend
+        # its life loading pipelines. Refusing the odd foreign request keeps the
+        # language the deployment exists for fast. Set this when a mixed-language
+        # deployment would rather pay the reload than refuse.
+        self._evict_primary = evict_primary
+        self._last_used: dict[str, float] = {}
         self._detectors: dict[str, PresidioDetector | None] = {}
         if detector is not None:
             self._detectors[self.policy.language] = detector
@@ -110,6 +137,7 @@ class Shield:
 
         cached = self._detectors.get(language, _MISSING)
         if cached is not _MISSING:
+            self._last_used[language] = time.monotonic()
             # A blank detector cached for a cheaper policy must not silently serve a
             # request that needs names; rebuild instead of under-detecting.
             if cached is None or not require_ner or getattr(cached, "ner_available", True):
@@ -122,6 +150,9 @@ class Shield:
         detector = PresidioDetector(
             language, allow_blank=not require_ner, download=self._download_models
         )
+        if require_ner:
+            self._make_room_for(detector, language)
+        self._last_used[language] = time.monotonic()
         try:
             detector.warm(require_person=require_ner)
         except NerUnavailableError:
@@ -130,6 +161,83 @@ class Shield:
             detector = None
         self._detectors[language] = detector
         return detector
+
+    def _loaded_languages(self) -> list[str]:
+        return [lang for lang, det in self._detectors.items() if det is not None]
+
+    def _evict_least_recently_used(self, keep: str) -> str | None:
+        """Drop the least recently used pipeline. Returns the language dropped."""
+        order = self._eviction_order(keep=keep)
+        if not order:
+            return None
+        victim = order[0][0]
+        self._evict(victim)
+        return victim
+
+    def _evictable_bytes(self, keep: str) -> int:
+        """How much dropping every other loaded pipeline could plausibly free."""
+        total = 0
+        for lang in self._loaded_languages():
+            if lang == keep:
+                continue
+            loaded = getattr(self._detectors[lang], "loaded_model", None)
+            total += estimated_load_bytes(loaded) or 0 if loaded else 0
+        return total
+
+    def _make_room_for(self, detector: PresidioDetector, language: str) -> None:
+        """Evict until the pipeline fits, or refuse — but never do both.
+
+        Evicting first and refusing afterwards is the worst outcome available: a
+        working pipeline is destroyed to attempt a load that was never going to fit,
+        and the shield ends up with nothing loaded. So the decision is made up front,
+        on estimates, and eviction happens only once it is known to be enough.
+        """
+        model = detector.planned_model()
+        if model is None:
+            return
+
+        cap = self._max_languages
+        while cap is not None and len(self._loaded_languages()) >= cap:
+            if self._evict_least_recently_used(keep=language) is None:
+                break
+
+        free, needed, reason = assess(model)
+        if free is None or needed is None or free >= needed:
+            return
+
+        victims = self._eviction_order(keep=language)
+        recoverable = sum(size for _, size in victims)
+        if free + recoverable < needed:
+            raise NerUnavailableError(
+                f"not enough memory to load {model} alongside {self.policy.language}: "
+                f"{reason}. Give the container more memory, use --pattern-only, which "
+                "needs no pipeline at all, or set evict_primary to trade the reload "
+                f"cost for the extra language."
+            )
+
+        for victim, size in victims:
+            self._evict(victim)
+            free += size
+            if free >= needed:
+                return
+
+    def _eviction_order(self, keep: str) -> list[tuple[str, int]]:
+        """Loaded pipelines other than *keep*, least recently used first, with sizes."""
+        out = []
+        for lang in sorted(self._loaded_languages(), key=lambda x: self._last_used.get(x, 0.0)):
+            if lang == keep:
+                continue
+            if lang == self.policy.language and not self._evict_primary:
+                continue
+            loaded = getattr(self._detectors[lang], "loaded_model", None)
+            out.append((lang, estimated_load_bytes(loaded) or 0 if loaded else 0))
+        return out
+
+    def _evict(self, language: str) -> None:
+        self._detectors.pop(language, None)
+        self._last_used.pop(language, None)
+        gc.collect()
+        logger.warning("pii-shield: unloaded the %s pipeline to make room", language)
 
     @property
     def ner_ready(self) -> bool:
@@ -165,7 +273,14 @@ class Shield:
             ner_spans = detector.detect(text, wanted, self._floor_threshold(pol))
             ner_spans.sort(key=lambda f: self._ner_priority(f, pol))
 
-        merged = merge_findings(secret_spans, national_spans, finance_spans, ner_spans)
+        # Contact details only when Presidio is not here to do it better: it checks
+        # numbers against real numbering plans, which this layer cannot.
+        contact_spans = (
+            contact_patterns.scan(text, entities=wanted) if detector is None else []
+        )
+        merged = merge_findings(
+            secret_spans, national_spans, finance_spans, contact_spans, ner_spans
+        )
         return [
             f
             for f in merged
@@ -303,7 +418,13 @@ class Shield:
         if existing is not None:
             return existing
         surrogate = factory.make(finding.entity, original)
-        self.store.remember(session_id, original, surrogate)
+        # Only a free-text name can come back declined; an identifier returns verbatim
+        # or not at all, and must never be matched loosely.
+        inflectable = (
+            finding.entity in _INFLECTABLE_ENTITIES
+            and get_profile(self.policy.language).inflects_names
+        )
+        self.store.remember(session_id, original, surrogate, inflectable=inflectable)
         return surrogate
 
     # -- deanonymize --------------------------------------------------------
@@ -313,9 +434,15 @@ class Shield:
         Longest surrogate first, so a surrogate that is a prefix of another one
         cannot corrupt the substitution.
         """
+        if not text:
+            return text
+        pairs = self.store.inflectable_pairs(session_id)
         mapping = self.store.pop_session(session_id) if consume else self.store.mapping(session_id)
-        if not mapping or not text:
+        if not mapping:
             return text
         for surrogate in sorted(mapping, key=len, reverse=True):
             text = text.replace(surrogate, mapping[surrogate])
-        return text
+        # Then the forms the language put the stand-in into. Exact substitution alone
+        # left "с Иванной Олеговной Горбуновой" untouched, so the caller read an
+        # invented person as a real one — a failure that looks like success.
+        return restore_inflected(text, pairs) if pairs else text
