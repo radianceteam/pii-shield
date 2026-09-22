@@ -82,8 +82,131 @@ shield never holds your API key.
 Python environment. Subsequent starts take a couple of seconds, and the container's
 healthcheck waits this out on its own.
 
-Not on PyPI yet, so the pip form installs from git. Everything below explains what this is
-doing and how to change it.
+Not on PyPI yet, so the pip form installs from git, and it needs **Python 3.11 or newer** —
+macOS ships 3.9 as `python3`, where pip backtracks for minutes instead of saying it cannot
+resolve the package; [uv](https://docs.astral.sh/uv/) fetches a suitable interpreter itself
+(see [Running it on your own machine](#running-it-on-your-own-machine)). Everything below
+explains what this is doing and how to change it.
+
+## Running it on your own machine
+
+The shield runs happily as a local proxy on a developer's machine: point your tools at it
+instead of at the provider, and nothing else changes. Your provider key passes through
+untouched; the shield never stores it.
+
+### Set it up
+
+Python 3.11 or newer, which `uv` will fetch for you:
+
+```bash
+uv venv --python 3.12 ~/.pii-shield
+VIRTUAL_ENV=~/.pii-shield uv pip install \
+  "pii-shield[server,surrogates] @ git+https://github.com/radianceteam/pii-shield"
+```
+
+That is the pattern-only tier: **30 MB on disk, about 65 MB resident**, starting in a
+second. It replaces tax and company identifiers, phone numbers, emails, IBAN, BIC and
+account numbers, and refuses passports, insurance numbers, payment cards and credentials.
+It does not detect names — see [the full tier](#the-full-tier) below.
+
+### Start it
+
+```bash
+~/.pii-shield/bin/pii-shieldd --pattern-only --port 8199 \
+  --upstream https://api.deepseek.com/v1
+```
+
+`--upstream` is your provider's base URL, and **one process serves one provider**: the
+OpenAI route posts to `<upstream>/chat/completions` and the Anthropic route to
+`<upstream>/messages`, so a daemon pointed at an OpenAI-shaped API serves OpenAI clients,
+one pointed at `https://api.anthropic.com/v1` serves Anthropic clients, and needing both
+means running two. The daemon binds `127.0.0.1`.
+
+**If the port is taken, only the log says so.** The daemon prints `address already in use`
+and exits with status 3, while whatever already held the port keeps answering — a bare
+`{"detail":"Not Found"}`, typically, which reads like a shield bug rather than a port
+clash. Check the log, or pick another port.
+
+### Point your client at it
+
+| Client | Setting |
+|---|---|
+| OpenAI SDKs, curl | `OPENAI_BASE_URL=http://127.0.0.1:8199/v1` |
+| Anthropic SDK | `anthropic.Anthropic(base_url="http://127.0.0.1:8199", api_key=...)` |
+| Claude Code | `ANTHROPIC_BASE_URL=http://127.0.0.1:8199`, with the daemon's `--upstream` set to `https://api.anthropic.com/v1` |
+| Hermes | `model.base_url: http://127.0.0.1:8199/v1` in `~/.hermes/config.yaml` |
+| Continue | `apiBase: http://127.0.0.1:8199/v1` on a `provider: openai` model — not yet verified |
+| Cursor | does not work against a local shield — see below |
+
+Claude Code sends its whole context through the shield — system prompt, `CLAUDE.md`, tool
+results — and all of it is examined, not only what you typed. That is the point, and it
+also means a credential shape anywhere in that context stops the request with a `400`
+instead of reaching the provider.
+
+Cursor is the exception, and not a fixable one: it builds prompts on its own servers and
+calls the configured base URL from there, so `127.0.0.1` is unreachable and the request
+never arrives. Publishing the shield to the internet would not buy much either — the
+prompt reaches Cursor's backend before the shield ever sees it, which is the disclosure
+the shield exists to prevent.
+
+### The full tier
+
+Names, organizations and places need the `ner` extra and one pipeline per language you
+write in:
+
+```bash
+VIRTUAL_ENV=~/.pii-shield uv pip install \
+  "pii-shield[ner,server,surrogates] @ git+https://github.com/radianceteam/pii-shield" \
+  "https://github.com/explosion/spacy-models/releases/download/ru_core_news_lg-3.8.0/ru_core_news_lg-3.8.0-py3-none-any.whl"
+~/.pii-shield/bin/pii-shieldd --language ru --port 8199 --upstream https://api.deepseek.com/v1
+```
+
+That is **800 MB on disk and about 1.1 GB resident per language**. Reading the pipeline off
+a cold disk takes half a minute; once the file is in the page cache a restart takes three
+seconds. `--download-models` fetches a missing pipeline instead of refusing to start, which
+is worth having on a workstation and not in a container.
+
+### Check what the provider actually receives
+
+From your side a working round trip and a silent pass-through look the same: either way you
+read your own real data in the reply. To see the difference, put a receiver where the
+provider would be and read what arrives:
+
+```python
+# receiver.py — logs what arrives, answers in the OpenAI shape
+import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["content-length"])))
+        print("provider got:", body["messages"][0]["content"], flush=True)
+        out = json.dumps({"id": "r", "object": "chat.completion", "model": "r",
+            "choices": [{"index": 0, "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "ok"}}]}).encode()
+        self.send_response(200); self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(out))); self.end_headers()
+        self.wfile.write(out)
+    def log_message(self, *a): pass
+HTTPServer(("127.0.0.1", 9997), H).serve_forever()
+```
+
+Start the shield with `--upstream http://127.0.0.1:9997/v1`, send it a prompt carrying a
+phone number and an email, and the receiver prints the stand-ins rather than the originals:
+
+```
+provider got: тел +7 748 143-61-92, почта zhdanovasinklitikija@example.net
+```
+
+### Docker on a workstation
+
+The image is meant for servers, where baking the pipelines into the build is the point. On
+a workstation the `uv` install above takes seconds, while building the image pulls the same
+pipelines through Docker Desktop's VM — whose network was measured here at 60 KB/s against
+the host's 6.9 MB/s, slow enough to time the build out after an hour until Docker Desktop
+was restarted.
+
+Everything in this section was checked on macOS (arm64) on 2026-09-22, against a daemon
+installed from git exactly as above; the one row marked otherwise was not.
 
 ## Using a hosted shield
 
