@@ -470,10 +470,12 @@ async def _anthropic_stream(
 ) -> AsyncIterator[bytes]:
     """Re-emit Anthropic's SSE stream with stand-ins restored in flight.
 
-    Anthropic sends ``event:`` lines alongside ``data:`` lines; the event lines are
-    forwarded untouched. A tail withheld mid-name is released just before the block
-    closes, as a delta of the same kind it was held from, so the client never sees a
-    stand-in and never loses the last characters of an answer.
+    Anthropic sends an ``event:`` line and a ``data:`` line per event, and the client
+    dispatches on the name, so the two are re-emitted together rather than separately.
+    A tail withheld mid-name is released just before the block closes, as a delta of
+    the same kind it was held from and under its own name, so the client never sees a
+    stand-in, never loses the last characters of an answer and never reads an injected
+    delta as somebody else's event.
     """
     mapping = shield.store.mapping(session_id) if session_id else {}
     pairs = shield.store.inflectable_pairs(session_id) if session_id else []
@@ -487,17 +489,27 @@ async def _anthropic_stream(
                         "type": "api_error", "message": raw.decode("utf-8", "replace")}})
                     return
 
+                # The event name is held back until its data line arrives, because a
+                # withheld tail has to be emitted *between* them — and an SSE event is
+                # the two lines together. Forwarding the name as it arrived put the
+                # tail of a tool call's arguments under "event: content_block_stop"
+                # and left the stop itself with no name at all: the client dropped the
+                # end of the arguments and could not parse the call.
+                pending: str | None = None
                 async for line in response.aiter_lines():
                     if not line:
                         continue
+                    if line.startswith("event:"):
+                        pending = line[len("event:") :].strip()
+                        continue
                     if not line.startswith("data:"):
-                        yield f"{line}\n".encode()
                         continue
                     data = line[len("data:") :].strip()
                     try:
                         event = json.loads(data)
                     except ValueError:
-                        yield f"data: {data}\n\n".encode()
+                        yield _sse(data, name=pending)
+                        pending = None
                         continue
 
                     if event.get("type") == "content_block_stop":
@@ -505,15 +517,19 @@ async def _anthropic_stream(
                         text_tail, json_tail = restorer.flush_for(index)
                         if text_tail:
                             yield _sse({"type": "content_block_delta", "index": index,
-                                        "delta": {"type": "text_delta", "text": text_tail}})
+                                        "delta": {"type": "text_delta", "text": text_tail}},
+                                       name="content_block_delta")
                         if json_tail:
                             yield _sse({"type": "content_block_delta", "index": index,
                                         "delta": {"type": "input_json_delta",
-                                                  "partial_json": json_tail}})
-                        yield _sse(event)
+                                                  "partial_json": json_tail}},
+                                       name="content_block_delta")
+                        yield _sse(event, name=pending or "content_block_stop")
+                        pending = None
                         continue
 
-                    yield _sse(restorer.restore_event(event))
+                    yield _sse(restorer.restore_event(event), name=pending)
+                    pending = None
     except httpx.HTTPError as exc:
         logger.warning("pii-shield anthropic stream failed: %s", exc)
         yield _sse({"type": "error", "error": {
@@ -522,8 +538,17 @@ async def _anthropic_stream(
         _drop(shield, session_id)
 
 
-def _sse(obj: Any) -> bytes:
-    return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n".encode()
+def _sse(obj: Any, name: str | None = None) -> bytes:
+    """One SSE event: its name and its data, written together.
+
+    Anthropic's SDK dispatches on the ``event:`` line, so a data line that arrives
+    without one, or under somebody else's name, is not the event it says it is.
+    """
+    body = obj if isinstance(obj, str) else json.dumps(obj, ensure_ascii=False)
+    if name is None and isinstance(obj, dict) and isinstance(obj.get("type"), str):
+        name = obj["type"]
+    prefix = f"event: {name}\n" if name else ""
+    return f"{prefix}data: {body}\n\n".encode()
 
 
 def _tail_chunk(payload: dict, text: str) -> dict:
