@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pii-shield"
-version = "0.1.0.dev0"
+version = "0.2.0"
 description = "Reversible PII detection and pseudonymization for text leaving for cloud LLM providers"
 readme = "README.md"
 license = "MIT"
