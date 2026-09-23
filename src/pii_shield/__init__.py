@@ -30,6 +30,7 @@ from .types import (
     Finding,
     RedactionUnavailableError,
     ShieldError,
+    UnknownSessionError,
 )
 
 __version__ = "0.1.0.dev0"
@@ -49,6 +50,7 @@ __all__ = [
     "Finding",
     "Policy",
     "RedactionUnavailableError",
+    "UnknownSessionError",
     "Scope",
     "SessionStore",
     "Shield",

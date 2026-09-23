@@ -34,7 +34,13 @@ from __future__ import annotations
 
 import logging
 
-from pii_shield import BlockedError, Policy, RedactionUnavailableError, Shield
+from pii_shield import (
+    BlockedError,
+    Policy,
+    RedactionUnavailableError,
+    Shield,
+    UnknownSessionError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +82,16 @@ def _on_llm_request(request=None, next_call=None, session_id: str = "", **_kw):
             rewritten.append(message)
             continue
         try:
-            result = _shield.anonymize(content, session_id=shield_session)
+            try:
+                result = _shield.anonymize(content, session_id=shield_session)
+            except UnknownSessionError:
+                # The conversation outlived the shield's session (an hour by default,
+                # or a restart). Starting a new one costs a fresh cast of stand-ins;
+                # letting the exception out would hand the original text to the
+                # provider, because this middleware chain fails open.
+                logger.info("pii-shield session expired, starting a new one")
+                shield_session = None
+                result = _shield.anonymize(content)
             shield_session = result.session_id or shield_session
             rewritten.append({**message, "content": result.text})
             changed = changed or result.changed
@@ -108,5 +123,12 @@ def _on_llm_output(text: str = "", session_id: str = "", **_kw):
     shield_session = _sessions.get(session_id)
     if _shield is None or not shield_session or not text:
         return None
-    restored = _shield.deanonymize(text, shield_session)
+    try:
+        restored = _shield.deanonymize(text, shield_session)
+    except UnknownSessionError:
+        # Nothing can be put back, and saying so beats raising: the answer still
+        # reaches the user, with the stand-ins visible rather than a failed turn.
+        logger.warning("pii-shield cannot restore this answer: the session is gone")
+        _sessions.pop(session_id, None)
+        return None
     return restored if restored != text else None

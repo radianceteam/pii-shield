@@ -34,6 +34,7 @@ from .types import (
     BlockedError,
     Finding,
     RedactionUnavailableError,
+    UnknownSessionError,
 )
 
 logger = logging.getLogger(__name__)
@@ -364,6 +365,15 @@ class Shield:
         ``fail_closed``.
         """
         pol = policy or self.policy
+        # A session id the store never minted used to be accepted, substituted into,
+        # and then not written anywhere: the caller got a 200, a session id back, and
+        # no way to restore any of it. Continuing a session is the only reason to pass
+        # one, so an id this process does not know is an error.
+        if session_id and not self.store.knows(session_id):
+            raise UnknownSessionError(
+                f"unknown session {session_id!r}: it was never issued here, or it has "
+                "expired. Omit it to start a new one."
+            )
         if pol.scope is Scope.OFF or not text:
             return AnonymizeResult(
                 text=text, session_id=session_id or "", findings=[], names_analyzed=False
@@ -468,6 +478,15 @@ class Shield:
         """
         if not text:
             return text
+        # An expired or evicted session used to come back as the answer with the
+        # stand-ins still in it, which reads like "the model named nobody" rather than
+        # "the real values are gone". A session that exists and holds nothing is a
+        # different thing and still answers normally.
+        if not self.store.knows(session_id):
+            raise UnknownSessionError(
+                f"unknown session {session_id!r}: it was never issued here, or it has "
+                "expired. The original values cannot be restored."
+            )
         pairs = self.store.inflectable_pairs(session_id)
         mapping = self.store.pop_session(session_id) if consume else self.store.mapping(session_id)
         if not mapping:

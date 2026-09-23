@@ -13,6 +13,7 @@ from pii_shield import (
     Scope,
     SessionStore,
     Shield,
+    UnknownSessionError,
 )
 from pii_shield.engine.presidio_engine import NerUnavailableError
 from pii_shield.types import Finding
@@ -186,5 +187,25 @@ def test_text_without_pii_is_unchanged(shield):
     assert result.text == clean and not result.changed
 
 
-def test_deanonymize_with_unknown_session_is_a_noop(shield):
-    assert shield.deanonymize("текст", "no-such-session") == "текст"
+def test_deanonymize_with_unknown_session_says_so(shield):
+    """It used to answer with the text unchanged, which reads as "nothing to restore"."""
+    with pytest.raises(UnknownSessionError):
+        shield.deanonymize("текст", "no-such-session")
+
+
+def test_anonymizing_into_an_unknown_session_says_so(shield):
+    """It used to substitute, record nothing, and hand back an unrestorable 200."""
+    with pytest.raises(UnknownSessionError):
+        shield.anonymize("ИНН 7707083893", session_id="conv-42")
+
+
+def test_a_session_that_holds_nothing_still_answers(pattern_policy):
+    """Empty is not unknown: it was all masked, so there is simply nothing to put back."""
+    pattern_policy.rules = [
+        r for r in pattern_policy.rules if r.entity != "RU_INN"
+    ] + [EntityRule(entity="RU_INN", action=Action.MASK)]
+    shield = Shield(pattern_policy, use_faker=False)
+    result = shield.anonymize("ИНН 7707083893")
+    assert "7707083893" not in result.text
+    assert shield.store.mapping(result.session_id) == {}
+    assert shield.deanonymize(result.text, result.session_id) == result.text

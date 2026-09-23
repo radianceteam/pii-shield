@@ -20,7 +20,13 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from pii_shield import BlockedError, Policy, RedactionUnavailableError, Shield
+from pii_shield import (
+    BlockedError,
+    Policy,
+    RedactionUnavailableError,
+    Shield,
+    UnknownSessionError,
+)
 from pii_shield.engine.presidio_engine import NerUnavailableError
 
 AUTH_ENV = "PII_SHIELD_TOKEN"
@@ -159,6 +165,26 @@ class BlockedResponse(BaseModel):
     entities: list[str]
 
 
+def _unknown_session(exc: Exception) -> HTTPException:
+    """404 in the same envelope as every other refusal from this service.
+
+    Answering 200 with the text unchanged — which is what both endpoints used to do —
+    is indistinguishable from "there was nothing to restore". The status has to say
+    that the session, and with it the ability to restore anything, is gone.
+    """
+    return HTTPException(
+        status_code=404,
+        detail={
+            "error": {
+                "message": str(exc),
+                "type": "pii_shield_unknown_session",
+                "param": "session_id",
+                "code": "unknown_session",
+            }
+        },
+    )
+
+
 def create_app(shield: Shield | None = None, proxy_config=None) -> FastAPI:
     """Build the sidecar app.
 
@@ -227,6 +253,8 @@ def create_app(shield: Shield | None = None, proxy_config=None) -> FastAPI:
                     }
                 },
             ) from exc
+        except UnknownSessionError as exc:
+            raise _unknown_session(exc) from exc
         except (RedactionUnavailableError, NerUnavailableError) as exc:
             # Fail closed: the caller must not fall back to sending raw text.
             raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -250,9 +278,12 @@ def create_app(shield: Shield | None = None, proxy_config=None) -> FastAPI:
         dependencies=[Depends(require_token)],
     )
     async def deanonymize(req: DeanonymizeRequest, sh: ShieldDep):
-        return DeanonymizeResponse(
-            text=sh.deanonymize(req.text, req.session_id, consume=req.consume)
-        )
+        try:
+            return DeanonymizeResponse(
+                text=sh.deanonymize(req.text, req.session_id, consume=req.consume)
+            )
+        except UnknownSessionError as exc:
+            raise _unknown_session(exc) from exc
 
     @app.delete("/v1/session/{session_id}", status_code=204, dependencies=[Depends(require_token)])
     async def drop_session(session_id: str, sh: ShieldDep) -> Response:

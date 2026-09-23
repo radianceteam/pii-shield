@@ -102,6 +102,17 @@ class SessionStore:
             sess = self._get_locked(session_id)
             return None if sess is None else sess.forward.get(original)
 
+    def knows(self, session_id: str) -> bool:
+        """Whether this session exists and has not expired.
+
+        Distinct from an empty mapping on purpose: a session where everything was
+        masked holds nothing and is still a live session, while an expired or invented
+        id is a session whose values are gone. The caller needs to tell those apart —
+        one means "nothing to restore", the other means "the originals are lost".
+        """
+        with self._lock:
+            return self._get_locked(session_id) is not None
+
     def mapping(self, session_id: str) -> dict[str, str]:
         """Snapshot of surrogate -> original. Copy, so callers cannot mutate the store."""
         with self._lock:

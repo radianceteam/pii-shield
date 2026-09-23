@@ -58,6 +58,17 @@ class BlockedError(ShieldError):
         self.findings = findings
 
 
+class UnknownSessionError(ShieldError):
+    """The session id does not exist here — invented, expired, or evicted.
+
+    Raised rather than shrugged off, because both ways of shrugging are silent
+    failures. Anonymizing into an unknown session used to substitute the text and
+    record nothing, so the caller got a clean 200 and could never restore it;
+    deanonymizing from one returned the text with the stand-ins still in it, which
+    reads as "the model did not mention anybody" rather than "the originals are gone".
+    """
+
+
 class RedactionUnavailableError(ShieldError):
     """The detection stack raised, so no safe text can be produced.
 

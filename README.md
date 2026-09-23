@@ -518,7 +518,14 @@ override; leave it to get the right answer for whichever language the request is
 
 ### Sidecar
 
-For consumers that cannot import Python:
+Three jobs the proxy cannot do, and they are what this is for:
+
+- **your code calls the model itself** — from a runtime that cannot import this library,
+  or through an SDK feature the proxy does not cover (batch, embeddings, files);
+- **the text is not going to a model at all** — logs, tickets, exports, user content on
+  its way into a database. `Scope.DISPLAY` exists for exactly this;
+- **you need the findings**, not just the cleaned text: what was found, where, of what
+  kind. The proxy returns a chat completion and nothing else.
 
 ```bash
 pii-shieldd --port 8099          # binds 127.0.0.1 by default
@@ -526,11 +533,19 @@ pii-shieldd --port 8099          # binds 127.0.0.1 by default
 
 ```
 POST /v1/anonymize      {text, session_id?, language?, surrogate_language?, policy?}
-                        → {text, session_id, findings[], names_analyzed}
+                        → {text, session_id, findings[], names_analyzed,
+                           credentials_redacted}
 POST /v1/deanonymize    {text, session_id, consume?}  → {text}
 DELETE /v1/session/{id}
 GET  /healthz
 ```
+
+**The session id comes from the shield.** Pass back the one `/v1/anonymize` returned,
+and one real value keeps one stand-in for the whole conversation. An id this process
+never issued — invented, expired (an hour by default) or lost to a restart — is a
+**404**, on both endpoints. It used to be a 200 with the text unchanged, which is
+indistinguishable from a successful round trip over a text that mentioned nobody: the
+caller was handed stand-ins and told everything went fine.
 
 `language` selects the language for that request; a language with no pipeline installed
 **fails closed** rather than answering 200 with the text unexamined. Unknown fields are
@@ -540,11 +555,27 @@ rejected rather than ignored, so a misspelled one is a 422 and not a silent defa
 `{"language": "en"}` means "the usual policy, in English" rather than "a policy with no
 rules". Pass `rules` explicitly — including `[]` — to replace them.
 
-A blocked payload returns **422** with the entity *kinds* only. A detection failure returns
-**503**. Both mean: do not send the original text. See [`examples/client.mjs`](examples/client.mjs).
+| | Meaning |
+|---|---|
+| `400` with `"type": "pii_shield_blocked"` | The policy refuses to send this at all. Entity *kinds* only, never the value |
+| `404` with `"code": "unknown_session"` | That session is not here. Nothing can be restored from it |
+| `422` | Malformed request — an unknown field, typically |
+| `503` | Detection failed, so nothing was cleaned and nothing may be sent |
+
+See [`examples/client.mjs`](examples/client.mjs) for the shape of all four.
 
 Python consumers should import `Shield` directly — an in-process call has no serialization
 cost and no window in which the raw payload exists on a socket.
+
+**One limit if you put this endpoint on a network for several tenants.** Sessions live in
+the shield, and the token that reaches the endpoint reaches all of them: a caller holding
+another caller's session id can restore that session. Ids are unguessable, so this is
+about a leaked id rather than a guessed one — but it means one shield per tenant, or an
+authorizing layer in front, if tenants must not be able to read each other's mappings.
+The proxy has no such surface, because its sessions never leave the process that made
+them. Should the multi-tenant sidecar become a real deployment, the fix is to stop
+holding sessions at all — return the mapping to the caller and take it back on the way
+in, so a caller can only ever restore what it was given.
 
 Settings come from defaults, then a TOML file, then flags — later wins:
 

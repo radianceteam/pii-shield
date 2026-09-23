@@ -49,8 +49,11 @@ def test_consume_is_the_default(client):
     body = client.post("/v1/anonymize", json={"text": SAMPLE}).json()
     args = {"text": body["text"], "session_id": body["session_id"]}
     client.post("/v1/deanonymize", json=args)
-    second = client.post("/v1/deanonymize", json=args).json()
-    assert second["text"] == body["text"]  # mapping already gone
+    second = client.post("/v1/deanonymize", json=args)
+    # The mapping is gone, and saying so is the point: answering 200 with the text
+    # unchanged looked exactly like a successful restore of a text without names.
+    assert second.status_code == 404
+    assert second.json()["detail"]["error"]["code"] == "unknown_session"
 
 
 def test_session_continuation_keeps_surrogates_stable(client):
@@ -95,8 +98,8 @@ def test_drop_session(client):
     assert client.delete(f"/v1/session/{body['session_id']}").status_code == 204
     back = client.post(
         "/v1/deanonymize", json={"text": body["text"], "session_id": body["session_id"]}
-    ).json()
-    assert back["text"] == body["text"]
+    )
+    assert back.status_code == 404
 
 
 def test_auth_is_enforced_when_the_token_is_set(client, monkeypatch):
@@ -286,3 +289,23 @@ def test_switching_language_switches_the_catalogue(pattern_only_client):
     assert resp.status_code == 200
     assert resp.json()["text"] == "ИНН 7707083893"      # not examined, not claimed clean
     assert resp.json()["names_analyzed"] is False
+
+
+# --- a session that is not here --------------------------------------------
+def test_an_invented_session_id_is_refused(client):
+    """It used to substitute the text and record nothing, and answer 200."""
+    response = client.post("/v1/anonymize", json={"text": SAMPLE, "session_id": "conv-42"})
+    assert response.status_code == 404
+    assert response.json()["detail"]["error"]["code"] == "unknown_session"
+
+
+def test_restoring_from_a_session_that_expired_is_refused(client):
+    from pii_shieldd.app import get_shield
+
+    body = client.post("/v1/anonymize", json={"text": SAMPLE}).json()
+    get_shield().store.drop(body["session_id"])   # what a TTL or a restart does
+    response = client.post(
+        "/v1/deanonymize", json={"text": body["text"], "session_id": body["session_id"]}
+    )
+    assert response.status_code == 404
+    assert "expired" in response.json()["detail"]["error"]["message"]
