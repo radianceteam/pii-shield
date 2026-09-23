@@ -109,6 +109,9 @@ second. It replaces tax and company identifiers, phone numbers, emails, IBAN, BI
 account numbers, and refuses passports, insurance numbers, payment cards and credentials.
 It does not detect names — see [the full tier](#the-full-tier) below.
 
+Installing from git is deliberate, and so is coming back for a newer commit: see
+[Update](#update).
+
 ### Start it
 
 ```bash
@@ -265,10 +268,16 @@ A real-looking name keeps the sentence a sentence.
 
 ## Install
 
+**Install from git, not from PyPI.** Nothing from this repository is published there, and
+the name `pii-shield` on PyPI belongs to an unrelated project — `pip install pii-shield`
+gets you somebody else's library.
+
 ```bash
-pip install pii-shield                              # library: national IDs + credentials
-pip install "pii-shield[ner,surrogates]"            # + names/places, realistic stand-ins
-pip install "pii-shield[ner,server,surrogates]"     # + the pii-shieldd sidecar and proxy
+SRC="git+https://github.com/radianceteam/pii-shield"
+
+pip install "pii-shield @ $SRC"                          # library: national IDs + credentials
+pip install "pii-shield[ner,surrogates] @ $SRC"          # + names/places, realistic stand-ins
+pip install "pii-shield[ner,server,surrogates] @ $SRC"   # + the pii-shieldd sidecar and proxy
 ```
 
 Then a pipeline per language you will process:
@@ -306,6 +315,31 @@ to `127.0.0.1` only: this service holds raw PII in memory, so exposing it on all
 would make it an anonymization oracle for the whole network.
 
 Measured on a server: **1.1 GB resident with one language loaded, 1.6 GB with two**. Pipelines load on demand, so a request naming a language that is in the image but not yet loaded will raise this further — the compose default of 3 GB covers two comfortably.
+
+### Update
+
+There are no releases to track yet, so an installed copy stays on whatever `main` was on
+the day it went in.
+
+```bash
+SRC="git+https://github.com/radianceteam/pii-shield"
+
+# uv — the same install command moves you to the current main
+VIRTUAL_ENV=~/.pii-shield uv pip install "pii-shield[server,surrogates] @ $SRC"
+
+# pip — needs the flag, see below
+pip install --force-reinstall --no-deps "pii-shield[server,surrogates] @ $SRC"
+
+# Docker
+git pull && docker compose up -d --build
+```
+
+**pip without `--force-reinstall` leaves you on the old code and says nothing.** It clones
+the repository, builds the new version, then finds the same version string already
+installed and keeps it. Drop `--no-deps` when the dependency list itself has changed;
+it is there so an update of the shield does not rebuild spaCy and Presidio with it.
+
+Restart `pii-shieldd` afterwards — a running process holds the code it started with.
 
 ### Two tiers
 
