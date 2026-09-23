@@ -19,6 +19,7 @@ but need no dependency; the uniqueness counter makes both paths exhaust-proof.
 from __future__ import annotations
 
 import hashlib
+import re
 
 try:  # pragma: no cover - exercised by both paths in tests via _FAKER_AVAILABLE
     from faker import Faker
@@ -62,6 +63,10 @@ _FALLBACK_POOLS: dict[str, tuple[str, ...]] = {  # noqa: RUF001 - names, not pro
 _FREE_TEXT_ENTITIES = frozenset({
     "PERSON", "ORGANIZATION", "LOCATION", "NRP", "EMAIL_ADDRESS", "URL", "RU_FULL_NAME",
 })
+
+# Endings that mark a Russian surname rather than a given name, for the case where a
+# single word is all the detector found.
+_SURNAME_TAIL = re.compile(r"(?:ов|ев|ёв|ин|ын|ск|цк)\w{0,3}$", re.IGNORECASE)
 
 _PHONE_ENTITIES = frozenset({
     "PHONE_NUMBER", "RU_PHONE", "CN_PHONE", "JP_PHONE", "KR_PHONE",
@@ -229,35 +234,71 @@ class SurrogateFactory:
             return f"<{entity}_{self._bump(entity)}>"
         return pool[self._bump(entity) % len(pool) - 1]
 
+    # Titles and qualifications Faker attaches to a name. They are not part of anyone's
+    # name, they make the first or last word of a stand-in something that cannot be
+    # matched back ("тов." has no stem), and "Wendy King MD" reads as a job, not a
+    # person.
+    _NAME_NOISE = frozenset({
+        "тов.", "т.", "г-н", "г-жа", "гр.", "mr.", "mrs.", "ms.", "dr.", "prof.",
+        "md", "dds", "dvm", "phd", "jr.", "sr.", "i", "ii", "iii", "iv", "v",
+    })
+
+    @classmethod
+    def _clean_name(cls, value: str) -> str:
+        """Drop the title or qualification Faker hangs off a name."""
+        words = [w for w in value.split() if w.casefold() not in cls._NAME_NOISE]
+        return " ".join(words) if words else value
+
     @staticmethod
     def _ru_full_name(f, original: str) -> str:
         """A stand-in written the way the original was written.
 
-        Three things have to survive, or the sentence around the name stops agreeing
-        with it: the order (a form writes "Васильев Пётр Николаевич", prose writes the
+        Three things have to survive, or the text around the name stops matching it:
+        the word order (a form writes "Васильев Пётр Николаевич", prose writes the
         other way round), the gender the patronymic announces, and whether the name was
         spelled out or abbreviated to initials. Faker composes from parts, so all three
         are free — but only for a locale that has those parts. A deployment putting
-        German stand-ins into Russian text falls back to a plain full name.
+        German or English stand-ins into Russian text falls back to a plain full name.
         """
         from .person_patterns import looks_female, shape_of
 
         if not hasattr(f, "middle_name_male"):
             return f.name()
         female = looks_female(original)
-        given = f.first_name_female() if female else f.first_name_male()
-        middle = f.middle_name_female() if female else f.middle_name_male()
-        family = f.last_name_female() if female else f.last_name_male()
+
+        def part(draw) -> str:
+            """A part long enough to be recognised when the language declines it.
+
+            A stand-in like "Лука" or "Мир" comes back as "Луку", and four letters are
+            not enough to tell that from the start of some other name — so the restore
+            leaves it alone and the reader is handed an invented person. Drawing again
+            costs nothing; the pool of five-letter-plus names is not short.
+            """
+            for _ in range(12):
+                value = draw()
+                if len(value) > 4:
+                    return value
+            return value
+
+        given = part(f.first_name_female if female else f.first_name_male)
+        middle = part(f.middle_name_female if female else f.middle_name_male)
+        family = part(f.last_name_female if female else f.last_name_male)
 
         shape = shape_of(original)
-        if shape == "family_first":
-            return f"{family} {given} {middle}"
-        if shape == "given_patronymic":
-            return f"{given} {middle}"
         if shape == "family_initials":
             return f"{family} {given[0]}.{middle[0]}."
         if shape == "initials_first":
             return f"{given[0]}.{middle[0]}. {family}"
+        if shape == "family_first":
+            return f"{family} {given} {middle}"
+        if shape == "given_patronymic":
+            return f"{given} {middle}"
+        if shape == "given_family":
+            return f"{given} {family}"
+        if shape == "single":
+            # A lone word is usually a surname in business prose ("Васильев подписал"),
+            # and its ending says which it is.
+            return family if _SURNAME_TAIL.search(original) else given
         return f"{given} {middle} {family}"
 
     @staticmethod
@@ -363,10 +404,13 @@ class SurrogateFactory:
         f = self._faker
         assert f is not None
         try:
-            if entity == "PERSON":
-                return f.name()
-            if entity == "RU_FULL_NAME":
-                return self._ru_full_name(f, original)
+            if entity in ("PERSON", "RU_FULL_NAME"):
+                # Composed rather than drawn whole, wherever the locale allows it.
+                # Faker's ru_RU name() returns "Гуляев Архип Юлианович" as readily as
+                # "Архип Юлианович Гуляев", and a stand-in written in the other order
+                # than the name it replaces cannot be mapped back word by word: the
+                # reply's "Архип Юлианович" came back as "Сергеевна Кузнецова".
+                return self._clean_name(self._ru_full_name(f, original))
             if entity == "ORGANIZATION":
                 return f.company()
             if entity == "LOCATION":

@@ -127,12 +127,15 @@ def looks_female(name: str) -> bool:
 def shape_of(name: str) -> str:
     """How the name is written, so the stand-in can be written the same way.
 
-    ``family_first`` matters because forms use it and prose does not, and a stand-in
-    in the other order reads as a different person's name.
+    The order matters beyond looks: a stand-in written the other way round cannot be
+    mapped back to the original word by word, because word *i* of one is not word *i*
+    of the other. That mapping is what restores a name the model declined.
     """
     words = name.split()
     if re.search(_INITIALS, name):
         return "initials_first" if re.match(rf"^{_INITIALS}", name) else "family_initials"
-    if len(words) == 3:
+    if len(words) >= 3:
         return "family_first" if re.fullmatch(_PATRONYMIC, words[-1]) else "given_first"
-    return "given_patronymic"
+    if len(words) == 2:
+        return "given_patronymic" if re.fullmatch(_PATRONYMIC, words[-1]) else "given_family"
+    return "single"

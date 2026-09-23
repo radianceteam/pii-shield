@@ -744,19 +744,38 @@ restore at all, because it looks like it worked.
 
 Restoring therefore matches on the stem for free-text names in the languages that
 decline them (ru, uk, pl, hr, sl, lt, el, fi, mk). Whole names are matched before their
-parts, and the loose pass runs only where the safe one found nothing; a single word maps
-to the word in the same position, so a lone surname does not drag a three-part name into
-the middle of a sentence. Identifiers are never matched loosely — a checksummed value
-comes back verbatim or not at all. Streaming does the same, withholding a window wide
-enough for the longest name plus its endings.
+parts; a single word maps to the word in the same position, so a lone surname does not
+drag a three-part name into the middle of a sentence. Identifiers are never matched
+loosely — a checksummed value comes back verbatim or not at all. Streaming does the
+same, withholding a window wide enough for the longest name plus its endings.
 
-Two limits worth knowing. Stem matching cannot tell an inflection of the stand-in from a
-different name that shares its stem — "Игнатов" looks like a form of "Игнатьев" to any
-rule short of a morphological analyser — so an unrelated name may occasionally be
-replaced when the full name is absent from the text. And the stand-in is inserted in the
-nominative regardless of the case the sentence wanted, which leaves the text the model
-reads slightly ungrammatical; agreeing it with the original would need a morphological
-generator and is not done today.
+**A loose match may never write over a real value, and never guesses.** Three rules,
+each of them the answer to output this produced:
+
+- **What has been written is never matched again.** The exact pass restored *"Петру
+  Николаевичу Васильеву"*, and the stem of the stand-in *"Василиса"* then matched the
+  real surname *"Васильеву"* that had just been written and replaced it with
+  *"Николаевичу"*. Replacements are protected; later passes see only untouched text.
+- **A lone word is matched whole, not by stem.** The stand-in *"Игнатьев"* matched
+  *"Игнатов"* — a different person standing next to the name — because three characters
+  had been trimmed off the stem. A single word now matches only itself, or itself with
+  its last letter replaced by an ending.
+- **No correspondence, no replacement.** Word *i* maps to word *i*, which means nothing
+  when the two names are written in different orders: *"Гуляев Архип Юлианович"* against
+  *"Анна Сергеевна Кузнецова"* turned *"Архип Юлианович"* into *"Сергеевна Кузнецова"*.
+  Where the patronymic sits at different indices, nothing is replaced and the stand-in
+  is left standing. A reader who sees an invented name can ask about it; a reader who
+  sees the wrong real name cannot.
+
+The stand-in is chosen so that it can come back: same word order as the original, the
+gender its patronymic announces, no part shorter than five letters (*"Лука"* returns as
+*"Луку"*, and four letters cannot be told from the start of another name), and no titles
+or qualifications — Faker offers *"тов. Некрасова Майя"* and *"Wendy King MD"*, and
+neither is a name.
+
+One limit remains: the stand-in is inserted in the nominative regardless of the case the
+sentence wanted, which leaves the text the model reads slightly ungrammatical. Agreeing
+it with the original would need a morphological generator and is not done today.
 
 ## Memory
 

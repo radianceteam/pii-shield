@@ -455,9 +455,8 @@ class Shield:
         mapping = self.store.pop_session(session_id) if consume else self.store.mapping(session_id)
         if not mapping:
             return text
-        for surrogate in sorted(mapping, key=len, reverse=True):
-            text = text.replace(surrogate, mapping[surrogate])
-        # Then the forms the language put the stand-in into. Exact substitution alone
-        # left "с Иванной Олеговной Горбуновой" untouched, so the caller read an
-        # invented person as a real one — a failure that looks like success.
-        return restore_inflected(text, pairs) if pairs else text
+        # Both passes happen in one place, because the second must know what the first
+        # wrote. Substituting the exact forms here and asking for the inflected ones
+        # afterwards let a stem pattern match a real name that had just been restored
+        # and replace it with another word of the same person's name.
+        return restore_inflected(text, pairs, exact=mapping)

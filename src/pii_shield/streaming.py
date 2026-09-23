@@ -72,9 +72,10 @@ class StreamDeanonymizer:
     def _restore(self, text: str) -> str:
         from .restore import restore
 
-        for key in self._keys:
-            text = text.replace(key, self._mapping[key])
-        return restore(text, self._inflected)
+        # Both passes in one call, for the same reason the non-streaming path does it:
+        # substituting the exact forms here would let the inflected pass match a real
+        # name that had just been written and replace it with another word of it.
+        return restore(text, self._inflected, exact=self._mapping)
 
     def flush(self) -> str:
         """Release the tail. Anything still partial was never a surrogate after all."""
