@@ -20,6 +20,7 @@ from .engine import (
     contact_patterns,
     finance_patterns,
     merge_findings,
+    name_scan,
     national_scan,
 )
 from .languages import SECRET_ENTITIES, get_profile
@@ -38,7 +39,7 @@ from .types import (
 logger = logging.getLogger(__name__)
 
 # Entities whose stand-in is free text and can therefore be declined.
-_INFLECTABLE_ENTITIES = frozenset({"PERSON", "ORGANIZATION", "LOCATION", "NRP"})
+_INFLECTABLE_ENTITIES = frozenset({"PERSON", "ORGANIZATION", "LOCATION", "NRP", "RU_FULL_NAME"})
 
 _MISSING = object()
 
@@ -272,6 +273,14 @@ class Shield:
             # The per-entity filter below then applies the real thresholds.
             ner_spans = detector.detect(text, wanted, self._floor_threshold(pol))
             ner_spans.sort(key=lambda f: self._ner_priority(f, pol))
+
+        # Names found by pattern share the NER layer rather than outranking it: where
+        # both fire on the same person, the longer span must win, and that is what
+        # _ner_priority already decides. Outranking would let a two-word pattern match
+        # shorten a three-word span the model got right, which is a leak, not a fix.
+        name_spans = name_scan(pol.language, text, wanted)
+        if name_spans:
+            ner_spans = sorted(ner_spans + name_spans, key=lambda f: self._ner_priority(f, pol))
 
         # Contact details only when Presidio is not here to do it better: it checks
         # numbers against real numbering plans, which this layer cannot.

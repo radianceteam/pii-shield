@@ -37,6 +37,10 @@ _FALLBACK_POOLS: dict[str, tuple[str, ...]] = {  # noqa: RUF001 - names, not pro
         "Иван Иванов", "Пётр Петров", "Сергей Сергеев", "Анна Смирнова",
         "Мария Кузнецова", "Алексей Попов", "Ольга Соколова", "Дмитрий Новиков",
     ),
+    "RU_FULL_NAME": (
+        "Иван Иванович Иванов", "Пётр Петрович Петров", "Сергей Сергеевич Сергеев",
+        "Анна Андреевна Смирнова", "Мария Ивановна Кузнецова", "Ольга Павловна Соколова",
+    ),
     "ORGANIZATION": (
         'ООО "Ромашка"', 'ООО "Василёк"', 'АО "Незабудка"', 'ООО "Одуванчик"',
     ),
@@ -56,7 +60,7 @@ _FALLBACK_POOLS: dict[str, tuple[str, ...]] = {  # noqa: RUF001 - names, not pro
 # rule to them rejected every candidate and fell through to the "#1" suffix, which
 # turned a phone number into something that is not one.
 _FREE_TEXT_ENTITIES = frozenset({
-    "PERSON", "ORGANIZATION", "LOCATION", "NRP", "EMAIL_ADDRESS", "URL",
+    "PERSON", "ORGANIZATION", "LOCATION", "NRP", "EMAIL_ADDRESS", "URL", "RU_FULL_NAME",
 })
 
 _PHONE_ENTITIES = frozenset({
@@ -226,6 +230,37 @@ class SurrogateFactory:
         return pool[self._bump(entity) % len(pool) - 1]
 
     @staticmethod
+    def _ru_full_name(f, original: str) -> str:
+        """A stand-in written the way the original was written.
+
+        Three things have to survive, or the sentence around the name stops agreeing
+        with it: the order (a form writes "Васильев Пётр Николаевич", prose writes the
+        other way round), the gender the patronymic announces, and whether the name was
+        spelled out or abbreviated to initials. Faker composes from parts, so all three
+        are free — but only for a locale that has those parts. A deployment putting
+        German stand-ins into Russian text falls back to a plain full name.
+        """
+        from .person_patterns import looks_female, shape_of
+
+        if not hasattr(f, "middle_name_male"):
+            return f.name()
+        female = looks_female(original)
+        given = f.first_name_female() if female else f.first_name_male()
+        middle = f.middle_name_female() if female else f.middle_name_male()
+        family = f.last_name_female() if female else f.last_name_male()
+
+        shape = shape_of(original)
+        if shape == "family_first":
+            return f"{family} {given} {middle}"
+        if shape == "given_patronymic":
+            return f"{given} {middle}"
+        if shape == "family_initials":
+            return f"{family} {given[0]}.{middle[0]}."
+        if shape == "initials_first":
+            return f"{given[0]}.{middle[0]}. {family}"
+        return f"{given} {middle} {family}"
+
+    @staticmethod
     def _make_iban(f, original: str) -> str:
         """An IBAN for the same country as the one being replaced."""
         from .finance_patterns import IBAN_LENGTHS, make_iban
@@ -330,6 +365,8 @@ class SurrogateFactory:
         try:
             if entity == "PERSON":
                 return f.name()
+            if entity == "RU_FULL_NAME":
+                return self._ru_full_name(f, original)
             if entity == "ORGANIZATION":
                 return f.company()
             if entity == "LOCATION":

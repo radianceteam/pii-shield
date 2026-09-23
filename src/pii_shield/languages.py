@@ -109,7 +109,7 @@ PRESIDIO_NATIONAL: dict[str, tuple[str, ...]] = {
 # What this project adds, because Presidio has nothing for these locales.
 LOCAL_NATIONAL: dict[str, tuple[str, ...]] = {
     "ru": ("RU_INN", "RU_SNILS", "RU_OGRN", "RU_PASSPORT", "RU_PHONE", "RU_BANK_ACCOUNT",
-           "RU_BIK"),
+           "RU_BIK", "RU_FULL_NAME"),
     "zh": ("CN_RESIDENT_ID", "CN_PHONE"),
     "ja": ("JP_MY_NUMBER", "JP_PHONE"),
     "ko": ("KR_RRN", "KR_PHONE"),

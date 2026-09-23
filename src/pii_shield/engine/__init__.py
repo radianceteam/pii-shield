@@ -9,13 +9,15 @@ overlapping a verified 身份证 loses regardless of the score Presidio assigned
 from __future__ import annotations
 
 from ..types import Finding
-from . import asia_patterns, contact_patterns, finance_patterns, ru_patterns
+from . import asia_patterns, contact_patterns, finance_patterns, person_patterns, ru_patterns
 from .presidio_engine import NER_ENTITIES, NerUnavailableError, PresidioDetector
 from .surrogates import SurrogateFactory
 
 __all__ = [
     "merge_findings",
+    "name_scan",
     "national_scan",
+    "NAME_SCANNERS",
     "NATIONAL_SCANNERS",
     "NER_ENTITIES",
     "NerUnavailableError",
@@ -24,6 +26,7 @@ __all__ = [
     "asia_patterns",
     "contact_patterns",
     "finance_patterns",
+    "person_patterns",
     "ru_patterns",
 ]
 
@@ -41,6 +44,20 @@ NATIONAL_SCANNERS = {
 def national_scan(language: str, text: str, entities: set[str] | None = None) -> list[Finding]:
     """Run the local national-identifier layer for *language*, if there is one."""
     scanner = NATIONAL_SCANNERS.get(language)
+    return scanner(text, entities=entities) if scanner else []
+
+
+# Language -> a pattern layer for personal names. Separate from the national scanners
+# because what it produces is a guess about a name rather than a verified identifier,
+# and it is resolved against the model's spans by length instead of outranking them.
+NAME_SCANNERS = {
+    "ru": person_patterns.scan,
+}
+
+
+def name_scan(language: str, text: str, entities: set[str] | None = None) -> list[Finding]:
+    """Run the local name-pattern layer for *language*, if there is one."""
+    scanner = NAME_SCANNERS.get(language)
     return scanner(text, entities=entities) if scanner else []
 
 

@@ -314,7 +314,7 @@ with three very different footprints:
 
 | Tier | Entities | Needs |
 |---|---|---|
-| Own patterns | national identifiers (INN, SNILS, OGRN, BIK, 身份证, マイナンバー, 주민등록번호), banking codes (IBAN, SWIFT/BIC, ABA, LEI), payment cards, credentials, **email and international phone numbers** | nothing — regex and checksums |
+| Own patterns | national identifiers (INN, SNILS, OGRN, BIK, 身份证, マイナンバー, 주민등록번호), banking codes (IBAN, SWIFT/BIC, ABA, LEI), payment cards, credentials, **email and international phone numbers**, and **Russian full names carrying a patronymic** | nothing — regex and checksums |
 | Presidio recognizers | IP, URL, dates, the national IDs Presidio ships for en/es/it/pl, and email and phone when it is installed — it checks numbers against real numbering plans and a regex cannot | `pii-shield[ner]`, but **no language model**: a blank pipeline is enough |
 | Language model | PERSON, ORGANIZATION, LOCATION, NRP | a spaCy pipeline, ~1 GB resident |
 
@@ -845,6 +845,17 @@ Treat this as **risk reduction, not a compliance guarantee**. That is why the de
 *blocks* passports, cards, national identifiers and credentials rather than replacing them:
 for the types where a miss is unacceptable, refusing the request beats hoping the detector
 caught it.
+
+**The model reads sentences; an agent sends forms.** Measured on `ru_core_news_lg`,
+`"ФИО: Пётр Николаевич Васильев"` produced no finding at all, and
+`"| Пётр Николаевич Васильев | менеджер |"` produced only *"Николаевич Васильев"* — the
+first name went to the provider while the response looked anonymized. Tool output, table
+rows and CRM dumps are most of what an agent sends, so this is not an edge case. A
+Russian patronymic is a near-unique anchor (`-ович/-евич`, `-овна/-евна`, through every
+case ending), so those names are now found by pattern as well, in both word orders and as
+initials — `RU_FULL_NAME`, no model involved. A name written without a patronymic
+(*"позвони Ивану Петрову"*) still needs the pipeline, which is why `names_analyzed` stays
+`false` on the pattern-only tier: finding some names is not analyzing names.
 
 Quality also varies by language and by pipeline size. The `sm` pipelines are noticeably
 weaker at person names than `lg` — install `lg` for anything that matters. Chinese recall
