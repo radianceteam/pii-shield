@@ -16,7 +16,7 @@ AUTH_ENV = "PII_SHIELD_TOKEN"
 # Keys accepted in a config file, each mirroring a command-line flag.
 CONFIG_KEYS = frozenset({
     "host", "port", "language", "surrogate_language", "upstream", "allow_remote",
-    "download_models", "pattern_only", "redact_credentials",
+    "download_models", "pattern_only", "redact_credentials", "cache_analysis",
 })
 
 
@@ -66,6 +66,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--cache-analysis",
+        action="store_true",
+        default=None,
+        help=(
+            "Remember what was found in a text, so the same text is not analyzed "
+            "twice. An agent resends its whole conversation every turn, so most of "
+            "what arrives has already been read: on a growing session this turns a "
+            "cost that climbs with the conversation into one that only covers what is "
+            "new. Detection is deterministic, so the answer is the same either way."
+        ),
+    )
+    parser.add_argument(
         "--download-models",
         action="store_true",
         default=None,
@@ -93,6 +105,7 @@ DEFAULTS = {
     "download_models": False,
     "pattern_only": False,
     "redact_credentials": False,
+    "cache_analysis": False,
 }
 
 
@@ -195,8 +208,13 @@ def build_app(args):
     if download:
         print("model download enabled: a missing pipeline will be fetched", file=sys.stderr)
 
+    cache = 2048 if _enabled(args, "cache_analysis", "PII_SHIELD_CACHE_ANALYSIS") else 0
+    if cache:
+        print(f"analysis cache: up to {cache} texts remembered", file=sys.stderr)
+
     return create_app(
-        Shield(policy, download_models=download), proxy_config=proxy_config
+        Shield(policy, download_models=download, detection_cache=cache),
+        proxy_config=proxy_config,
     )
 
 

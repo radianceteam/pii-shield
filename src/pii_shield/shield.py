@@ -10,6 +10,7 @@ import gc
 import hashlib
 import logging
 import time
+from collections import OrderedDict
 
 from . import secrets as secrets_layer
 from .engine import (
@@ -58,6 +59,7 @@ class Shield:
         download_models: bool = False,
         max_loaded_languages: int | None = None,
         evict_primary: bool = False,
+        detection_cache: int = 0,
     ) -> None:
         self.policy = policy or Policy.ru_default()
         self.store = store or SessionStore()
@@ -84,6 +86,11 @@ class Shield:
         # deployment would rather pay the reload than refuse.
         self._evict_primary = evict_primary
         self._last_used: dict[str, float] = {}
+        # How many analyzed texts to remember. Off by default: it is only worth the
+        # memory where the same text arrives repeatedly, which is exactly what an
+        # agent does and exactly what a one-shot library call does not.
+        self._detection_cache_size = int(detection_cache)
+        self._cache: OrderedDict[str, tuple[Finding, ...]] = OrderedDict()
         self._detectors: dict[str, PresidioDetector | None] = {}
         if detector is not None:
             self._detectors[self.policy.language] = detector
@@ -266,6 +273,19 @@ class Shield:
         national_spans = national_scan(pol.language, text, wanted)
         finance_spans = finance_patterns.scan(text, entities=wanted)
         detector = self.detector_for(pol.language, pol) if pol.requires_presidio() else None
+
+        # An agent resends its whole conversation on every turn, so the language model
+        # spends most of its time re-reading text it has already read. Detection is
+        # deterministic — the same text under the same policy and the same pipeline
+        # yields the same spans — so the answer can simply be remembered. The key is a
+        # hash and the value is offsets and entity kinds, so nothing here holds the
+        # text it was computed from.
+        key = self._cache_key(text, pol, detector)
+        if key is not None:
+            remembered = self._cache.get(key)
+            if remembered is not None:
+                self._cache.move_to_end(key)
+                return list(remembered)
         ner_spans: list[Finding] = []
         if detector is not None and wanted & self._ner_scope(detector):
             # The analyzer must be asked for the LOWEST threshold any rule uses, not
@@ -291,12 +311,48 @@ class Shield:
         merged = merge_findings(
             secret_spans, national_spans, finance_spans, contact_spans, ner_spans
         )
-        return [
+        findings = [
             f
             for f in merged
             if f.score >= pol.threshold_for(f.entity)
             and not self._is_noise(f, text, pol)
         ]
+        if key is not None:
+            self._remember_detection(key, findings)
+        return findings
+
+    def _cache_key(self, text: str, pol: Policy, detector) -> str | None:
+        """What makes two analyses interchangeable, or None when caching is off.
+
+        The policy, the pipeline actually loaded and whether it can find names all
+        change the answer, so all three are in the key. Getting that wrong would serve
+        a blank pipeline's result — names not looked for — to a request that asked for
+        them, which is the one failure this project exists to prevent.
+        """
+        if self._detection_cache_size <= 0 or not text:
+            return None
+        fingerprint = "\x00".join((
+            pol.model_dump_json(),
+            str(getattr(detector, "loaded_model", None)),
+            str(getattr(detector, "ner_available", False)),
+        ))
+        digest = hashlib.blake2b(digest_size=16)
+        digest.update(fingerprint.encode("utf-8"))
+        digest.update(b"\x00")
+        digest.update(text.encode("utf-8"))
+        return digest.hexdigest()
+
+    # A text carrying more findings than this is not a conversation turn, it is a data
+    # dump; remembering it would spend the whole cache on one entry.
+    _CACHE_FINDING_LIMIT = 2000
+
+    def _remember_detection(self, key: str, findings: list[Finding]) -> None:
+        if len(findings) > self._CACHE_FINDING_LIMIT:
+            return
+        self._cache[key] = tuple(findings)
+        self._cache.move_to_end(key)
+        while len(self._cache) > self._detection_cache_size:
+            self._cache.popitem(last=False)
 
     @staticmethod
     def _ner_priority(finding: Finding, pol: Policy) -> tuple:

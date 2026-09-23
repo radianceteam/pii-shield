@@ -358,6 +358,38 @@ which on a pattern-only deployment is also no — that entity belongs to Presidi
 too dangerous to send. Cards and credentials are found by the dependency-free layer, so
 the cheapest deployment blocks exactly what the full one blocks.
 
+### What a turn costs, and why it stops growing
+
+An agent resends its whole conversation on every turn, so the naive cost of shielding it
+climbs with the conversation: by the fifth turn the language model has read the first
+message five times. Detection is deterministic — the same text, policy and pipeline give
+the same spans — so the answer can simply be remembered:
+
+```bash
+pii-shieldd --cache-analysis --upstream https://api.anthropic.com/v1
+# or PII_SHIELD_CACHE_ANALYSIS=1, or cache_analysis = true in the config file
+```
+
+Measured on a growing session, full tier, Russian `lg` pipeline, one turn adding about
+20 KB:
+
+| | turn 1 (21 KB) | turn 3 (63 KB) | turn 5 (105 KB) |
+|---|---|---|---|
+| without the cache | 0.68 s | 1.59 s | 2.69 s |
+| with it | 0.54 s | 0.59 s | **0.61 s** |
+
+What is remembered is a hash of the text and the offsets and kinds found in it — never
+the text itself, and never a value. The entry is keyed by the policy and by the pipeline
+actually loaded, so a result computed without a language model can never be served to a
+request that asked for names. It is off by default because it is only worth the memory
+where the same text arrives repeatedly, which is what an agent does and what a one-shot
+library call does not.
+
+The tier still decides the floor: the pattern-only tier reads 100 KB in 0.06 s and the
+full one in 3.6 s, of which about 2 s is the language model's own arithmetic and cannot
+be optimized away. What the cache changes is that this price is paid once per piece of
+text rather than once per turn.
+
 ### Refusing a credential, or redacting it
 
 A credential is refused by default, and for a person pasting a key by hand that is the

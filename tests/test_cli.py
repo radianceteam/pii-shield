@@ -249,3 +249,26 @@ def test_redact_credentials_via_config_file(tmp_path):
     path.write_text("[pii-shield]\nredact_credentials = true\n", encoding="utf-8")
     resolved = settings(["--config", str(path)], load_config(str(path)))
     assert resolved.redact_credentials is True
+
+
+def test_analysis_cache_is_off_unless_asked(monkeypatch):
+    monkeypatch.delenv("PII_SHIELD_UPSTREAM", raising=False)
+    monkeypatch.delenv("PII_SHIELD_CACHE_ANALYSIS", raising=False)
+    from pii_shieldd.app import get_shield
+
+    with TestClient(build_app(cheap())):
+        assert get_shield()._detection_cache_size == 0
+
+
+def test_cache_analysis_flag(monkeypatch):
+    monkeypatch.delenv("PII_SHIELD_UPSTREAM", raising=False)
+    from pii_shieldd.app import get_shield
+
+    with TestClient(build_app(cheap(["--cache-analysis"]))):
+        assert get_shield()._detection_cache_size > 0
+
+
+def test_cache_analysis_via_config_file(tmp_path):
+    path = tmp_path / "c.toml"
+    path.write_text("[pii-shield]\ncache_analysis = true\n", encoding="utf-8")
+    assert settings(["--config", str(path)], load_config(str(path))).cache_analysis is True

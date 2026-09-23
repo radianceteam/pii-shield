@@ -210,6 +210,8 @@ class PresidioDetector:
         from presidio_analyzer import AnalyzerEngine
         from presidio_analyzer.nlp_engine import NlpEngineProvider
 
+        from .context_enhancer import build_context_enhancer
+
         nlp_configuration: dict = {"nlp_engine_name": "spacy"}
         if self.profile.label_map:
             # Merged over Presidio's defaults rather than replacing them, so a pipeline
@@ -235,7 +237,11 @@ class PresidioDetector:
                 continue
             self._loaded_model = model_name
             self._drop_unused_components(engine)
-            return AnalyzerEngine(nlp_engine=engine, supported_languages=[self.language])
+            return AnalyzerEngine(
+                nlp_engine=engine,
+                supported_languages=[self.language],
+                context_aware_enhancer=build_context_enhancer(),
+            )
 
         if self.allow_blank:
             # No language model, but Presidio is importable: run its pattern
@@ -244,7 +250,11 @@ class PresidioDetector:
             engine = self._blank_engine()
             self._blank = True
             self._loaded_model = f"blank:{self.language}"
-            return AnalyzerEngine(nlp_engine=engine, supported_languages=[self.language])
+            return AnalyzerEngine(
+                nlp_engine=engine,
+                supported_languages=[self.language],
+                context_aware_enhancer=build_context_enhancer(),
+            )
 
         tried = "; ".join(errors) or "no pipeline installed for this language"
         wheel = MODEL_RELEASE_URL.format(
