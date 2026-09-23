@@ -234,6 +234,7 @@ class PresidioDetector:
                 errors.append(f"{model_name}: {exc}")
                 continue
             self._loaded_model = model_name
+            self._drop_unused_components(engine)
             return AnalyzerEngine(nlp_engine=engine, supported_languages=[self.language])
 
         if self.allow_blank:
@@ -253,6 +254,30 @@ class PresidioDetector:
             f"no spaCy pipeline loadable for language {self.language!r} ({tried}). "
             f"Install one with: pip install {wheel}"
         )
+
+    # Components Presidio never reads. It asks the pipeline for tokens, lemmas and
+    # entities, and the dependency parse feeds none of them, while costing roughly a
+    # tenth of the running time on a large payload.
+    #
+    # The attribute ruler looks equally unused and is not: English lemmatization is
+    # rule-based and reads the POS tags it assigns, so dropping it made spaCy warn
+    # (W108) and quietly degraded the lemmas that Presidio scores context by. Russian
+    # gets its tags from the statistical morphologizer and would not have noticed —
+    # which is exactly how a change like this goes unnoticed in the wrong language.
+    _UNUSED_COMPONENTS = ("parser", "senter")
+
+    def _drop_unused_components(self, engine) -> None:
+        """Strip pipeline components nothing downstream consumes."""
+        pipelines = getattr(engine, "nlp", None)
+        pipeline = pipelines.get(self.language) if isinstance(pipelines, dict) else None
+        if pipeline is None:
+            return
+        for name in self._UNUSED_COMPONENTS:
+            if name in getattr(pipeline, "pipe_names", ()):
+                try:
+                    pipeline.remove_pipe(name)
+                except Exception:  # pragma: no cover - a pipeline that refuses keeps it
+                    logger.debug("pii-shield: could not drop %r from %s", name, self.language)
 
     def _blank_engine(self):
         """A Presidio NLP engine backed by ``spacy.blank`` — tokenizer only, no NER."""
