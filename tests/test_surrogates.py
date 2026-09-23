@@ -92,3 +92,28 @@ def test_inflected_surname_does_not_leak():
     f = SurrogateFactory(seed="s", locale="ru_RU", use_faker=False)
     for _ in range(20):
         assert "сидор" not in f.make("PERSON", "Петру Сидоровым").casefold()
+
+
+def test_a_stand_in_carries_no_title_in_any_locale():
+    """Faker decorates names differently per locale, and each way breaks the round trip.
+
+    The stand-in went out as "Ing. Marlis Hofmann B.Eng." and the model wrote back
+    "Marlis Hofmann": the exact match found nothing, and the reader was left holding an
+    invented person. Measured against de, en and ru, which decorate with "Ing."/"B.Eng.",
+    "Dr."/"MD" and "тов." respectively.
+    """
+    for locale in ("de_DE", "en_US", "ru_RU"):
+        for seed in range(40):
+            name = SurrogateFactory(seed=f"s{seed}", locale=locale).make(
+                "PERSON", "Пётр Николаевич Васильев"
+            )
+            assert "." not in name, (locale, name)
+            assert not any(
+                word.casefold() in {"md", "dds", "phd", "jr", "sr"} for word in name.split()
+            ), (locale, name)
+
+
+def test_initials_keep_their_dots():
+    """The cleaner strips abbreviations; a stand-in that *is* initials is not one."""
+    name = SurrogateFactory(seed="x", locale="ru_RU").make("RU_FULL_NAME", "Васильев П.Н.")
+    assert "." in name, name

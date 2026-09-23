@@ -234,23 +234,31 @@ class SurrogateFactory:
             return f"<{entity}_{self._bump(entity)}>"
         return pool[self._bump(entity) % len(pool) - 1]
 
-    # Titles and qualifications Faker attaches to a name. They are not part of anyone's
-    # name, they make the first or last word of a stand-in something that cannot be
-    # matched back ("тов." has no stem), and "Wendy King MD" reads as a job, not a
-    # person.
+    # Qualifications Faker hangs off a name without a dot to give them away.
     _NAME_NOISE = frozenset({
-        "тов.", "т.", "г-н", "г-жа", "гр.", "mr.", "mrs.", "ms.", "dr.", "prof.",
-        "md", "dds", "dvm", "phd", "jr.", "sr.", "i", "ii", "iii", "iv", "v",
+        "md", "dds", "dvm", "phd", "mba", "ii", "iii", "iv", "jr", "sr",
     })
 
     @classmethod
     def _clean_name(cls, value: str) -> str:
-        """Drop the title or qualification Faker hangs off a name."""
-        words = [w for w in value.split() if w.casefold() not in cls._NAME_NOISE]
+        """Drop the titles and qualifications Faker attaches to a name.
+
+        They are not part of anybody's name, and they break the round trip: the
+        stand-in went out as "Ing. Marlis Hofmann B.Eng." and the model wrote back
+        "Marlis Hofmann", so the exact match found nothing and the reader was left
+        with an invented person. Every locale does this its own way — "тов." in
+        Russian, "Dr."/"MD" in English, "Ing."/"B.Eng." in German — so the rule is
+        structural rather than a list: a word carrying a dot is an abbreviation, not
+        a name, and the handful of dotless qualifications are named above.
+        """
+        words = [
+            word for word in value.split()
+            if "." not in word and word.casefold().strip(",") not in cls._NAME_NOISE
+        ]
         return " ".join(words) if words else value
 
-    @staticmethod
-    def _ru_full_name(f, original: str) -> str:
+    @classmethod
+    def _ru_full_name(cls, f, original: str) -> str:
         """A stand-in written the way the original was written.
 
         Three things have to survive, or the text around the name stops matching it:
@@ -263,7 +271,7 @@ class SurrogateFactory:
         from .person_patterns import looks_female, shape_of
 
         if not hasattr(f, "middle_name_male"):
-            return f.name()
+            return cls._clean_name(f.name())
         female = looks_female(original)
 
         def part(draw) -> str:
@@ -410,7 +418,7 @@ class SurrogateFactory:
                 # "Архип Юлианович Гуляев", and a stand-in written in the other order
                 # than the name it replaces cannot be mapped back word by word: the
                 # reply's "Архип Юлианович" came back as "Сергеевна Кузнецова".
-                return self._clean_name(self._ru_full_name(f, original))
+                return self._ru_full_name(f, original)
             if entity == "ORGANIZATION":
                 return f.company()
             if entity == "LOCATION":
