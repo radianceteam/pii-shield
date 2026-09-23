@@ -9,6 +9,7 @@ from __future__ import annotations
 import gc
 import hashlib
 import logging
+import re
 import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
@@ -47,6 +48,24 @@ _INFLECTABLE_ENTITIES = frozenset({"PERSON", "ORGANIZATION", "LOCATION", "NRP", 
 # Below this, splitting costs more than it saves: the threads spend their time being
 # created rather than reading.
 _PARALLEL_MIN_CHARS = 32 * 1024
+
+# What counts as being inside a word, for deciding whether a span cuts one in half.
+# Deliberately only the alphabets that write with spaces: in Chinese and Japanese every
+# neighbouring character is a letter, so this question has no meaning there and the
+# check simply never fires.
+_WORD_CHAR = re.compile(r"[0-9A-Za-zА-Яа-яЁёЇїІіЄєҐґ]")
+
+
+def _is_word(char: str) -> bool:
+    return bool(_WORD_CHAR.match(char))
+
+
+def _cuts_a_word(text: str, start: int, end: int) -> bool:
+    """True if the span begins or ends in the middle of a word."""
+    if start > 0 and _is_word(text[start - 1]) and _is_word(text[start]):
+        return True
+    return end < len(text) and _is_word(text[end]) and _is_word(text[end - 1])
+
 
 _MISSING = object()
 
@@ -460,6 +479,17 @@ class Shield:
         """
         if finding.entity not in NER_ENTITIES:
             return False
+        # A span that begins or ends inside a word is a fragment of something, not a
+        # value. Presidio's URL recognizer reads `record.get("key")` as the address
+        # `record.ge`, because `.ge` is Georgia's domain — 642 of 935 findings in a
+        # payload of ordinary code were this. They are allowed by policy, so they
+        # change no text, but they are noise in what the caller is shown and work for
+        # every layer downstream. A fragment the policy *would* replace is kept and
+        # widened to whole words instead, which is what _whole_tokens does.
+        if pol.action_for(finding.entity) is Action.ALLOW and _cuts_a_word(
+            text, finding.start, finding.end
+        ):
+            return True
         span = text[finding.start : finding.end]
         if len(span.strip()) < pol.effective_min_ner_span:
             return True
@@ -473,6 +503,36 @@ class Shield:
             return False
         detector = self._detectors.get(pol.language)
         return bool(detector is not None and getattr(detector, "ner_available", True))
+
+    @staticmethod
+    def _whole_tokens(text: str, findings: list[Finding]) -> list[Finding]:
+        """Widen every span that will be replaced until it covers whole words.
+
+        A replacement that begins or ends inside a word cannot survive the round trip.
+        Presidio's URL recognizer reads ``record.get("key")`` as the address
+        ``record.ge`` — ``.ge`` is Georgia's domain — and a policy that replaces URLs
+        would put a fake address where half an identifier used to be: the model reads
+        broken code, and what comes back no longer contains the stand-in to put right.
+
+        So the span grows to the word edges first. Whatever is replaced is then a whole
+        token, which is the only kind of replacement that can be matched back. A span
+        that swallows another this way keeps the first one, because the findings were
+        already resolved against each other and the wider one covers the same text.
+        """
+        widened: list[Finding] = []
+        for finding in sorted(findings, key=lambda f: f.start):
+            start, end = finding.start, finding.end
+            while start > 0 and _is_word(text[start - 1]) and _is_word(text[start]):
+                start -= 1
+            while end < len(text) and _is_word(text[end]) and _is_word(text[end - 1]):
+                end += 1
+            if widened and start < widened[-1].end:
+                continue
+            widened.append(
+                finding if (start, end) == (finding.start, finding.end)
+                else finding.model_copy(update={"start": start, "end": end})
+            )
+        return widened
 
     def anonymize(
         self,
@@ -525,7 +585,9 @@ class Shield:
             f.action is Action.MASK and f.entity in SECRET_ENTITIES for f in resolved
         )
 
-        replaceable = [f for f in resolved if f.action is not Action.ALLOW]
+        replaceable = self._whole_tokens(
+            text, [f for f in resolved if f.action is not Action.ALLOW]
+        )
         if not replaceable:
             return AnonymizeResult(
                 text=text, session_id=session_id or "", findings=resolved,
