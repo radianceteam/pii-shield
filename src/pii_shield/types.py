@@ -83,6 +83,14 @@ class AnonymizeResult(BaseModel):
             "clean when only half of it was examined."
         ),
     )
+    credentials_redacted: bool = Field(
+        default=False,
+        description=(
+            "True when a credential in this payload was replaced by a placeholder "
+            "rather than refusing the request. The replacement is one-way: nothing is "
+            "written to the session map, so the real value never returns in an answer."
+        ),
+    )
 
     @property
     def changed(self) -> bool:

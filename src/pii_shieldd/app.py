@@ -132,6 +132,14 @@ class AnonymizeResponse(BaseModel):
             "not looked for. Everything with a checksum or a fixed shape still was."
         )
     )
+    credentials_redacted: bool = Field(
+        default=False,
+        description=(
+            "True when a credential was replaced by a placeholder instead of refusing "
+            "the request. One-way: it is not in the session map and deanonymize() will "
+            "not bring it back."
+        ),
+    )
 
 
 class DeanonymizeRequest(BaseModel):
@@ -186,6 +194,7 @@ def create_app(shield: Shield | None = None, proxy_config=None) -> FastAPI:
             "ner_ready": sh.ner_ready,
             "language": policy.language,
             "pattern_only": policy.local_only,
+            "redact_credentials": policy.redact_credentials,
             "entities": sorted(policy.active_entities),
         }
 
@@ -225,6 +234,7 @@ def create_app(shield: Shield | None = None, proxy_config=None) -> FastAPI:
             text=result.text,
             session_id=result.session_id,
             names_analyzed=result.names_analyzed,
+            credentials_redacted=result.credentials_redacted,
             findings=[
                 FindingOut(
                     entity=f.entity, start=f.start, end=f.end,

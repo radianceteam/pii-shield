@@ -214,3 +214,38 @@ def test_healthz_admits_there_is_no_ner(monkeypatch):
     monkeypatch.delenv("PII_SHIELD_UPSTREAM", raising=False)
     with TestClient(build_app(cheap())) as client:
         assert client.get("/healthz").json()["ner_ready"] is False
+
+
+# --- credential redaction ---------------------------------------------------
+def test_redaction_is_off_unless_asked(monkeypatch):
+    monkeypatch.delenv("PII_SHIELD_UPSTREAM", raising=False)
+    monkeypatch.delenv("PII_SHIELD_REDACT_CREDENTIALS", raising=False)
+    from pii_shieldd.app import get_shield
+
+    with TestClient(build_app(cheap())):
+        assert get_shield().policy.redact_credentials is False
+
+
+def test_redact_credentials_flag(monkeypatch):
+    monkeypatch.delenv("PII_SHIELD_UPSTREAM", raising=False)
+    from pii_shieldd.app import get_shield
+
+    with TestClient(build_app(cheap(["--redact-credentials"]))) as client:
+        assert get_shield().policy.redact_credentials is True
+        assert client.get("/healthz").json()["redact_credentials"] is True
+
+
+def test_redact_credentials_via_environment(monkeypatch):
+    monkeypatch.delenv("PII_SHIELD_UPSTREAM", raising=False)
+    monkeypatch.setenv("PII_SHIELD_REDACT_CREDENTIALS", "1")
+    from pii_shieldd.app import get_shield
+
+    with TestClient(build_app(cheap())):
+        assert get_shield().policy.redact_credentials is True
+
+
+def test_redact_credentials_via_config_file(tmp_path):
+    path = tmp_path / "c.toml"
+    path.write_text("[pii-shield]\nredact_credentials = true\n", encoding="utf-8")
+    resolved = settings(["--config", str(path)], load_config(str(path)))
+    assert resolved.redact_credentials is True

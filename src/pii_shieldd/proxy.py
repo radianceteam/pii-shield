@@ -47,6 +47,17 @@ DEFAULT_UPSTREAM = "https://api.openai.com/v1"
 SSE_DONE = "[DONE]"
 
 
+class UpstreamHeaderError(ValueError):
+    """A header the caller sent cannot be put on the wire.
+
+    httpx encodes header values as ASCII, while the server decodes what arrived as
+    latin-1 — so ``Authorization: Bearer тест`` reaches this process as a string of
+    high code points and makes httpx raise while it builds the forwarded request.
+    That surfaced to the caller as a 500 with no explanation. Clients should not send
+    such a header, but naming the offending one in a 400 is both truer and actionable.
+    """
+
+
 @dataclass
 class ProxyConfig:
     upstream: str = DEFAULT_UPSTREAM
@@ -113,6 +124,14 @@ def create_proxy_router(config: ProxyConfig | None = None) -> APIRouter:
         ):
             if passthrough in request.headers:
                 headers[passthrough] = request.headers[passthrough]
+        for name, value in headers.items():
+            try:
+                value.encode("ascii")
+            except UnicodeEncodeError as exc:
+                raise UpstreamHeaderError(
+                    f"header {name!r} cannot be forwarded: HTTP header values must be "
+                    "ASCII, and this one is not"
+                ) from exc
         return headers
 
     def per_request_policy(request: Request, shield: Shield) -> Policy | None:
@@ -149,6 +168,13 @@ def create_proxy_router(config: ProxyConfig | None = None) -> APIRouter:
         except (UnsupportedLanguageError, ValueError) as exc:
             return _error(400, str(exc), "invalid_request_error", "bad_language")
 
+        # Built before anything is anonymized: a request that cannot be forwarded
+        # should fail before a session map exists for it.
+        try:
+            headers = upstream_headers(request)
+        except UpstreamHeaderError as exc:
+            return _error(400, str(exc), "invalid_request_error", "bad_header")
+
         try:
             messages, session_id, _changed = anonymize_messages(
                 shield, payload["messages"], policy=policy
@@ -168,7 +194,6 @@ def create_proxy_router(config: ProxyConfig | None = None) -> APIRouter:
             return _error(503, f"pii-shield unavailable: {exc}", "pii_shield_error", "unavailable")
 
         forwarded = {**payload, "messages": messages}
-        headers = upstream_headers(request)
         url = f"{cfg.upstream}/chat/completions"
 
         if payload.get("stream"):
@@ -216,6 +241,11 @@ def create_proxy_router(config: ProxyConfig | None = None) -> APIRouter:
             return _anthropic_error(400, str(exc), "invalid_request_error")
 
         try:
+            headers = upstream_headers(request)
+        except UpstreamHeaderError as exc:
+            return _anthropic_error(400, str(exc), "invalid_request_error")
+
+        try:
             forwarded, session_id, _changed, _names = anthropic_anonymize(
                 shield, payload, policy=policy
             )
@@ -229,7 +259,6 @@ def create_proxy_router(config: ProxyConfig | None = None) -> APIRouter:
         except (RedactionUnavailableError, NerUnavailableError) as exc:
             return _anthropic_error(503, f"pii-shield unavailable: {exc}", "api_error")
 
-        headers = upstream_headers(request)
         url = f"{cfg.upstream}/messages"
 
         if payload.get("stream"):
@@ -273,6 +302,11 @@ def create_proxy_router(config: ProxyConfig | None = None) -> APIRouter:
             return _anthropic_error(400, "body must be an object", "invalid_request_error")
 
         try:
+            headers = upstream_headers(request)
+        except UpstreamHeaderError as exc:
+            return _anthropic_error(400, str(exc), "invalid_request_error")
+
+        try:
             policy = per_request_policy(request, shield)
             forwarded, session_id, _changed, _names = anthropic_anonymize(
                 shield, payload, policy=policy
@@ -294,7 +328,7 @@ def create_proxy_router(config: ProxyConfig | None = None) -> APIRouter:
                 response = await client.post(
                     f"{cfg.upstream}/messages/count_tokens",
                     json=forwarded,
-                    headers=upstream_headers(request),
+                    headers=headers,
                 )
         except httpx.HTTPError as exc:
             return _anthropic_error(502, f"upstream unreachable: {exc}", "api_error")
@@ -306,10 +340,12 @@ def create_proxy_router(config: ProxyConfig | None = None) -> APIRouter:
     async def models(request: Request):
         """Plain passthrough — clients probe this before they will talk to a base URL."""
         try:
+            headers = upstream_headers(request)
+        except UpstreamHeaderError as exc:
+            return _error(400, str(exc), "invalid_request_error", "bad_header")
+        try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(
-                    f"{cfg.upstream}/models", headers=upstream_headers(request)
-                )
+                response = await client.get(f"{cfg.upstream}/models", headers=headers)
         except httpx.HTTPError as exc:
             return _error(502, f"upstream unreachable: {exc}", "pii_shield_error", "upstream")
         return JSONResponse(status_code=response.status_code, content=_json_or_text(response))

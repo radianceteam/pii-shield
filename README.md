@@ -347,6 +347,7 @@ English means it is not looked for. `/healthz` lists what a deployment actually 
 
 ```json
 {"status": "ok", "ner_ready": false, "language": "ru", "pattern_only": true,
+ "redact_credentials": false,
  "entities": ["ABA_ROUTING", "CREDIT_CARD", "IBAN_CODE", "RU_INN", "..."]}
 ```
 
@@ -356,6 +357,41 @@ which on a pattern-only deployment is also no — that entity belongs to Presidi
 **The tiers refuse the same things.** A tier decides what can be *detected*, not what is
 too dangerous to send. Cards and credentials are found by the dependency-free layer, so
 the cheapest deployment blocks exactly what the full one blocks.
+
+### Refusing a credential, or redacting it
+
+A credential is refused by default, and for a person pasting a key by hand that is the
+useful answer: the request stops, and the key never went anywhere.
+
+A coding agent is the case it does not fit. The agent resends its whole conversation on
+every turn, so one connection string anywhere in that history refuses every following
+request — and the history only grows, so the session never recovers. That is not a shield
+protecting a workflow; it is a shield ending it.
+
+```bash
+pii-shieldd --redact-credentials --upstream https://api.openai.com/v1
+# or PII_SHIELD_REDACT_CREDENTIALS=1, or redact_credentials = true in the config file
+```
+```python
+Policy.for_language("ru").model_copy(update={"redact_credentials": True})
+```
+
+The credential is then replaced by `<SECRET_CONNECTION_STRING>` and the request proceeds.
+The replacement is **one-way**: nothing is written to the session map, so unlike a name
+the real value cannot come back in an answer — which is the point, since a model has no
+business repeating a key it was never given. `/v1/anonymize` reports it next to
+`names_analyzed`:
+
+```json
+{"text": "подключение не поднимается: <SECRET_CONNECTION_STRING>",
+ "names_analyzed": true, "credentials_redacted": true}
+```
+
+Only credentials move. Payment cards and permanent national identifiers are still
+refused, because a plausible fake card or passport number is worse than a refusal: the
+model may reason about it, or write it into its answer as if it were real. And an
+explicit `ALLOW` rule stays allowed — the switch relaxes a refusal, it does not overrule
+a decision the caller made on purpose.
 
 ## Use
 

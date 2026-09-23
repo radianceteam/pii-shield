@@ -16,7 +16,7 @@ AUTH_ENV = "PII_SHIELD_TOKEN"
 # Keys accepted in a config file, each mirroring a command-line flag.
 CONFIG_KEYS = frozenset({
     "host", "port", "language", "surrogate_language", "upstream", "allow_remote",
-    "download_models", "pattern_only",
+    "download_models", "pattern_only", "redact_credentials",
 })
 
 
@@ -55,6 +55,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--redact-credentials",
+        action="store_true",
+        default=None,
+        help=(
+            "Replace credentials with a placeholder and forward the request, instead "
+            "of refusing it. For a coding agent, which resends its whole history: one "
+            "connection string in there otherwise refuses every following request "
+            "forever. The placeholder is one-way — the real value never comes back."
+        ),
+    )
+    parser.add_argument(
         "--download-models",
         action="store_true",
         default=None,
@@ -81,6 +92,7 @@ DEFAULTS = {
     "allow_remote": False,
     "download_models": False,
     "pattern_only": False,
+    "redact_credentials": False,
 }
 
 
@@ -125,6 +137,13 @@ def check_bind(args) -> str | None:
     return None
 
 
+def _enabled(args, key: str, env: str) -> bool:
+    """An opt-in switch: the flag, or the environment variable, in that order."""
+    return bool(
+        getattr(args, key, False) or os.environ.get(env, "").lower() in ("1", "true", "yes")
+    )
+
+
 def build_app(args):
     """Assemble the app from resolved settings.
 
@@ -136,10 +155,7 @@ def build_app(args):
 
     from .app import create_app
 
-    pattern_only = bool(
-        getattr(args, "pattern_only", False)
-        or os.environ.get("PII_SHIELD_PATTERN_ONLY", "").lower() in ("1", "true", "yes")
-    )
+    pattern_only = _enabled(args, "pattern_only", "PII_SHIELD_PATTERN_ONLY")
     if pattern_only:
         policy = Policy.pattern_only(args.language)
         print(
@@ -157,6 +173,15 @@ def build_app(args):
         policy.surrogate_language = surrogate
         print(f"surrogates in: {surrogate}", file=sys.stderr)
 
+    if _enabled(args, "redact_credentials", "PII_SHIELD_REDACT_CREDENTIALS"):
+        policy.redact_credentials = True
+        print(
+            "credential redaction enabled: a credential is replaced by a placeholder "
+            "and the request is forwarded, instead of being refused. Cards and "
+            "passports are still refused.",
+            file=sys.stderr,
+        )
+
     from .proxy import UPSTREAM_ENV, ProxyConfig
 
     upstream = getattr(args, "upstream", None) or os.environ.get(UPSTREAM_ENV)
@@ -166,10 +191,7 @@ def build_app(args):
         proxy_config.upstream = upstream.rstrip("/")
         print(f"proxy enabled: /v1/chat/completions -> {proxy_config.upstream}", file=sys.stderr)
 
-    download = bool(
-        getattr(args, "download_models", False)
-        or os.environ.get("PII_SHIELD_DOWNLOAD_MODELS", "").lower() in ("1", "true", "yes")
-    )
+    download = _enabled(args, "download_models", "PII_SHIELD_DOWNLOAD_MODELS")
     if download:
         print("model download enabled: a missing pipeline will be fetched", file=sys.stderr)
 

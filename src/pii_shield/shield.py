@@ -22,7 +22,7 @@ from .engine import (
     merge_findings,
     national_scan,
 )
-from .languages import get_profile
+from .languages import SECRET_ENTITIES, get_profile
 from .memory import assess, estimated_load_bytes
 from .policy import Policy, Scope
 from .restore import restore as restore_inflected
@@ -379,11 +379,16 @@ class Shield:
         if blocked:
             raise BlockedError(blocked)
 
+        redacted = any(
+            f.action is Action.MASK and f.entity in SECRET_ENTITIES for f in resolved
+        )
+
         replaceable = [f for f in resolved if f.action is not Action.ALLOW]
         if not replaceable:
             return AnonymizeResult(
                 text=text, session_id=session_id or "", findings=resolved,
                 names_analyzed=self.names_analyzed(pol),
+                credentials_redacted=redacted,
             )
 
         sid = session_id or self.store.new_session()
@@ -402,6 +407,7 @@ class Shield:
         return AnonymizeResult(
             text=out, session_id=sid, findings=resolved,
             names_analyzed=self.names_analyzed(pol),
+            credentials_redacted=redacted,
         )
 
     def _replacement(

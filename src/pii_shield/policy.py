@@ -103,6 +103,14 @@ class Policy(BaseModel):
     rules: list[EntityRule] = Field(default_factory=list)
     scope: Scope = Scope.FULL
     secrets: bool = Field(default=True, description="Run the credential-pattern layer")
+    redact_credentials: bool = Field(
+        default=False,
+        description=(
+            "Replace a credential with an irreversible placeholder instead of refusing "
+            "the request. Off by default: for a person pasting a secret by hand, being "
+            "stopped is the useful answer."
+        ),
+    )
     allowlist: list[str] | None = Field(
         default=None,
         description="Spans that are never PII. None resolves to the language's list.",
@@ -199,10 +207,20 @@ class Policy(BaseModel):
 
     # -- lookups ------------------------------------------------------------
     def action_for(self, entity: str) -> Action:
+        action = self.default_action
         for rule in self.rules:
             if rule.entity == entity:
-                return rule.action
-        return self.default_action
+                action = rule.action
+                break
+        # A coding agent resends its whole conversation on every turn, so one
+        # connection string anywhere in that history refuses every following request
+        # — and the history only grows, so the session never recovers. Redacting the
+        # credential keeps the session alive without sending it: MASK is not written
+        # to the session map, so unlike a name it can never come back in an answer.
+        # Only a refusal becomes a redaction; an explicit ALLOW stays allowed.
+        if self.redact_credentials and action is Action.BLOCK and entity in SECRET_ENTITIES:
+            return Action.MASK
+        return action
 
     def threshold_for(self, entity: str) -> float:
         for rule in self.rules:
@@ -302,11 +320,13 @@ class Policy(BaseModel):
 
     @property
     def blocking_entities(self) -> frozenset[str]:
-        """Entities whose mere presence aborts the request."""
-        out = {r.entity for r in self.rules if r.action is Action.BLOCK}
-        if self.default_action is Action.BLOCK:
-            out |= {e for e in (self.entities or []) if self.action_for(e) is Action.BLOCK}
-        return frozenset(out)
+        """Entities whose mere presence aborts the request.
+
+        Resolved through :meth:`action_for` rather than read off the rules, so a
+        credential the policy now redacts is not still advertised as blocking.
+        """
+        named = {r.entity for r in self.rules} | set(self.entities or [])
+        return frozenset(e for e in named if self.action_for(e) is Action.BLOCK)
 
     # -- presets ------------------------------------------------------------
     @classmethod
@@ -365,7 +385,11 @@ class Policy(BaseModel):
         language = language or base.language
         if language == base.language:
             return base.model_copy(deep=True)
-        return cls.pattern_only(language) if base.local_only else cls.for_language(language)
+        made = cls.pattern_only(language) if base.local_only else cls.for_language(language)
+        # Carried for the same reason as the tier: naming a language in a request must
+        # not flip the deployment back to refusing what it was started to redact.
+        made.redact_credentials = base.redact_credentials
+        return made
 
     @classmethod
     def ru_default(cls) -> Policy:
