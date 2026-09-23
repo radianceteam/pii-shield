@@ -412,10 +412,16 @@ Dependencies, and the table for that conversion is built inside the function —
 it was called 374 000 times with **22 distinct tags** between them. Remembering the
 answer is **1.41×**, and `PII_SHIELD_NO_PATCHES=1` switches it and anything like it off.
 
+A fifth was Presidio's own deduplication, which compares every result with every
+result already kept, twice over. On the same payload that came to **5.5 million
+comparisons that removed nothing at all** — half of them in a check that cannot fire,
+since exact duplicates are gone by the line above it — and 0.60 s, a fifth of the whole
+detection. Presidio has already rewritten it on `main` and not yet released it, so the
+shield carries that rewrite until a release does, and stops as soon as one does.
+
 Chasing the arithmetic further is not worth it: after all of this, the matrix
 multiplications are **0.10 s of 3.74 s**, so an infinitely fast BLAS — AMD's AOCL, MKL,
-anything — would buy 1.03×. What remains is a quadratic deduplication inside Presidio
-and the glue around the Russian lemmatizer.
+anything — would buy 1.03×.
 
 The obvious next candidate is not taken. Dropping the lemmatizer is worth another 1.88×,
 and the test suite says no: a US social security number written without dashes is found

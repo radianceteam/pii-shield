@@ -279,7 +279,7 @@ class PresidioDetector:
     def _drop_unused_components(self, engine) -> None:
         """Strip pipeline components nothing downstream consumes, and fix the BLAS."""
         from .fast_ops import use_platform_blas
-        from .spacy_patches import apply_all
+        from .patches import apply_all
 
         applied = apply_all()
         if applied:
