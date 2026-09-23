@@ -406,6 +406,17 @@ walks its dictionary in pure Python unless `DAWG2` is installed, which is now pa
 
 Together, on 199 KB of Russian text: **7.19 s to 2.90 s**.
 
+A fourth cost was a pure function rebuilding its own lookup table. spaCy's Russian
+lemmatizer converts every morphological analysis from OpenCorpora notation to Universal
+Dependencies, and the table for that conversion is built inside the function — on 199 KB
+it was called 374 000 times with **22 distinct tags** between them. Remembering the
+answer is **1.41×**, and `PII_SHIELD_NO_PATCHES=1` switches it and anything like it off.
+
+Chasing the arithmetic further is not worth it: after all of this, the matrix
+multiplications are **0.10 s of 3.74 s**, so an infinitely fast BLAS — AMD's AOCL, MKL,
+anything — would buy 1.03×. What remains is a quadratic deduplication inside Presidio
+and the glue around the Russian lemmatizer.
+
 The obvious next candidate is not taken. Dropping the lemmatizer is worth another 1.88×,
 and the test suite says no: a US social security number written without dashes is found
 only because the words around it raise its score, and that scoring is lemma-based. The
