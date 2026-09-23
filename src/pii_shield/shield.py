@@ -351,9 +351,18 @@ class Shield:
         return self._executor
 
     def _detect_one(self, text: str, policy: Policy | None = None) -> list[Finding]:
-        """Every layer over one piece of text."""
+        """Every layer over one piece of text.
+
+        This project's own layers are asked for the whole catalogue: they cost about
+        three per cent of the running time, so reporting an entity the policy allows
+        costs nothing worth saving. Presidio is asked only for what the policy acts
+        on, because there it is a third of the total — every extra entity is another
+        set of patterns over the whole text and a few hundred more results through a
+        quadratic deduplication, all to report something that changes no text.
+        """
         pol = policy or self.policy
         wanted = set(pol.entities)
+        acted_on = set(pol.active_entities)
 
         secret_spans = secrets_layer.scan(text, entities=wanted) if pol.secrets else []
         national_spans = national_scan(pol.language, text, wanted)
@@ -373,12 +382,12 @@ class Shield:
                 self._cache.move_to_end(key)
                 return list(remembered)
         ner_spans: list[Finding] = []
-        if detector is not None and wanted & self._ner_scope(detector):
+        if detector is not None and acted_on & self._ner_scope(detector):
             # The analyzer must be asked for the LOWEST threshold any rule uses, not
             # the default: Presidio drops results below the threshold it is given, so
             # passing the default silently discards a per-entity rule that lowered it.
             # The per-entity filter below then applies the real thresholds.
-            ner_spans = detector.detect(text, wanted, self._floor_threshold(pol))
+            ner_spans = detector.detect(text, acted_on, self._floor_threshold(pol))
             ner_spans.sort(key=lambda f: self._ner_priority(f, pol))
 
         # Names found by pattern share the NER layer rather than outranking it: where

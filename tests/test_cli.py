@@ -289,3 +289,36 @@ def test_parallel_flag(monkeypatch):
 
     with TestClient(build_app(cheap(["--parallel", "4"]))):
         assert get_shield()._parallel == 4
+
+
+# --- several processes ------------------------------------------------------
+def test_settings_can_come_from_the_environment(monkeypatch):
+    """A worker gets no command line, so the environment has to carry everything."""
+    monkeypatch.setenv("PII_SHIELD_LANGUAGE", "en")
+    monkeypatch.setenv("PII_SHIELD_PORT", "9123")
+    monkeypatch.setenv("PII_SHIELD_PATTERN_ONLY", "1")
+    resolved = settings()
+    assert (resolved.language, resolved.port, resolved.pattern_only) == ("en", 9123, True)
+
+
+def test_a_flag_still_wins_over_the_environment(monkeypatch):
+    monkeypatch.setenv("PII_SHIELD_LANGUAGE", "en")
+    assert settings(["--language", "ja"]).language == "ja"
+
+
+def test_a_worker_rebuilds_the_same_app(monkeypatch):
+    """Round trip: resolved settings out to the environment, and an app back from it."""
+    monkeypatch.delenv("PII_SHIELD_UPSTREAM", raising=False)
+    from pii_shieldd.__main__ import app_from_environment, export_environment
+    from pii_shieldd.app import get_shield
+
+    export_environment(cheap(["--redact-credentials", "--cache-analysis"]))
+    with TestClient(app_from_environment()):
+        policy = get_shield().policy
+        assert policy.local_only and policy.redact_credentials
+        assert get_shield()._detection_cache_size > 0
+
+
+def test_workers_default_to_one():
+    assert settings().workers == 1
+    assert settings(["--workers", "4"]).workers == 4

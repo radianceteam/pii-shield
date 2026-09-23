@@ -390,7 +390,28 @@ full one in 3.6 s, of which about 2 s is the language model's own arithmetic. Wh
 cache changes is that this price is paid once per piece of text rather than once per
 turn.
 
-**And that arithmetic can be spread across cores.** It is not a large language model —
+**Most of that arithmetic was going through the wrong library.** thinc ships its own
+build of BLIS and routes every matrix multiplication through it, and that build uses a
+generic kernel: on an AMD EPYC 9454P, which has AVX-512, it reached **36 GFLOPS** while
+numpy — same process, same matrices — reached **2378** through OpenBLAS. Sixty-five
+times. The shield now points the loaded pipeline at the platform's own BLAS, which is
+worth **1.34×** end to end with identical findings; `PII_SHIELD_BLAS=blis` puts it back.
+
+Two more costs came from asking for work nobody wanted. Presidio is asked only for the
+entities the policy *acts on* — asking for URL and DATE_TIME as well, which it is
+configured to leave alone, cost another **1.34×** in patterns over the whole text and a
+few hundred more results through a quadratic deduplication. And the Russian lemmatizer
+walks its dictionary in pure Python unless `DAWG2` is installed, which is now part of the
+`ner` extra: same dictionary, same answers, **1.15×**.
+
+Together, on 199 KB of Russian text: **7.19 s to 2.90 s**.
+
+The obvious next candidate is not taken. Dropping the lemmatizer is worth another 1.88×,
+and the test suite says no: a US social security number written without dashes is found
+only because the words around it raise its score, and that scoring is lemma-based. The
+measurement was real and so was the miss.
+
+**And the arithmetic can be spread across cores.** It is not a large language model —
 `ru_core_news_lg` is a small convolutional network over word vectors — and it runs inside
 numpy, which releases the interpreter lock while it multiplies. So blocks of one payload
 genuinely overlap in threads, sharing the single loaded pipeline rather than paying for
@@ -413,6 +434,15 @@ shield reads is already written that way — an agent's turn is a list of messag
 document is paragraphs. Measured against the same text read in one pass: 781 findings of
 782 identical, the odd one out a false positive that the split happened to drop. Payloads
 under 32 KB are read in one pass, where threads would cost more than they save.
+
+**Threads are for one request; processes are for several callers.** One process analyzes
+one payload at a time, so four developers behind one deployment wait in line — measured,
+four different payloads took 15.75 s one after another and 15.10 s all at once, which is
+no gain at all. `--workers 4` serves them from four processes instead. Each holds its own
+language pipeline, about a gigabyte, so this is memory traded for throughput. One caveat:
+a session belongs to the process that made it, so a caller using `/v1/anonymize` and
+`/v1/deanonymize` across two requests needs to reach the same worker. The proxy is
+unaffected — its sessions never outlive a request.
 
 ### Refusing a credential, or redacting it
 

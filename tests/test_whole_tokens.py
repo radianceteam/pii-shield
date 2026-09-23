@@ -73,7 +73,21 @@ def test_a_fragment_the_policy_allows_is_not_reported_at_all():
 
 
 @needs_ru
-def test_a_real_url_in_prose_is_still_found():
+def test_an_allowed_entity_is_not_looked_for_at_all():
+    """Presidio is asked only for what the policy acts on: a URL it would leave alone
+    costs a set of patterns over the whole text and a few hundred results through a
+    quadratic deduplication, to report something that changes nothing."""
+    prose = "Документация здесь: https://example.com/docs — читайте."
     shield = Shield(Policy.for_language("ru"))
-    result = shield.anonymize("Документация здесь: https://example.com/docs — читайте.")
+    assert shield.policy.action_for("URL") is Action.ALLOW
+    assert not [f for f in shield.anonymize(prose).findings if f.entity == "URL"]
+
+
+@needs_ru
+def test_a_policy_that_acts_on_urls_still_finds_them():
+    policy = Policy.for_language("ru")
+    policy.rules = [r for r in policy.rules if r.entity != "URL"]
+    policy.rules.append(EntityRule(entity="URL", action=Action.SURROGATE))
+    result = Shield(policy).anonymize("Документация здесь: https://example.com/docs — читайте.")
     assert [f for f in result.findings if f.entity == "URL"]
+    assert "example.com" not in result.text

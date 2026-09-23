@@ -29,6 +29,11 @@ dependencies = [
 ner = [
     "presidio-analyzer>=2.2.355",
     "presidio-anonymizer>=2.2.355",
+    # The Russian lemmatizer walks a dictionary for every token, and pymorphy3 does
+    # that in pure Python unless this is installed — it was 60% of what remained after
+    # the other costs were dealt with. Same dictionary, same answers, compiled. Only
+    # where a wheel exists; the pure-Python reader stays as the fallback.
+    "DAWG2>=0.9.0,<1.0.0; platform_python_implementation == 'CPython'",
 ]
 # Realistic surrogates ("Thomas Mueller") instead of <PERSON> placeholders.
 surrogates = ["faker>=30.0"]

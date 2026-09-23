@@ -17,8 +17,26 @@ AUTH_ENV = "PII_SHIELD_TOKEN"
 CONFIG_KEYS = frozenset({
     "host", "port", "language", "surrogate_language", "upstream", "allow_remote",
     "download_models", "pattern_only", "redact_credentials", "cache_analysis",
-    "parallel",
+    "parallel", "workers",
 })
+
+# Every setting also readable from the environment, which is how a worker process
+# learns what to build: uvicorn starts workers by importing a factory, not by
+# repeating the command line.
+ENV_KEYS = {
+    "host": "PII_SHIELD_HOST",
+    "port": "PII_SHIELD_PORT",
+    "language": "PII_SHIELD_LANGUAGE",
+    "surrogate_language": "PII_SHIELD_SURROGATE_LANGUAGE",
+    "upstream": "PII_SHIELD_UPSTREAM",
+    "pattern_only": "PII_SHIELD_PATTERN_ONLY",
+    "redact_credentials": "PII_SHIELD_REDACT_CREDENTIALS",
+    "cache_analysis": "PII_SHIELD_CACHE_ANALYSIS",
+    "download_models": "PII_SHIELD_DOWNLOAD_MODELS",
+    "allow_remote": "PII_SHIELD_ALLOW_REMOTE",
+    "parallel": "PII_SHIELD_PARALLEL",
+    "workers": "PII_SHIELD_WORKERS",
+}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -90,6 +108,19 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help=(
+            "Serve from this many processes. One process analyzes one request at a "
+            "time — the work is CPU-bound and the interpreter lock is not negotiable — "
+            "so several developers behind one deployment wait in line. Each worker "
+            "holds its own language pipeline, about a gigabyte. Sessions are per "
+            "process, so /v1/anonymize and /v1/deanonymize must reach the same one; "
+            "the proxy is unaffected, since its sessions never outlive a request."
+        ),
+    )
+    parser.add_argument(
         "--download-models",
         action="store_true",
         default=None,
@@ -119,6 +150,7 @@ DEFAULTS = {
     "redact_credentials": False,
     "cache_analysis": False,
     "parallel": 0,
+    "workers": 1,
 }
 
 
@@ -137,9 +169,34 @@ def load_config(path: str | None) -> dict:
     return section
 
 
+def from_environment() -> dict:
+    """Settings taken from the environment.
+
+    The container has always mapped these onto flags in its entrypoint; reading them
+    here as well is what lets a worker rebuild exactly the same app, because uvicorn
+    starts workers by importing a factory, which gets no command line.
+    """
+    out: dict = {}
+    for key, name in ENV_KEYS.items():
+        value = os.environ.get(name)
+        if not value:
+            continue
+        default = DEFAULTS.get(key)
+        if isinstance(default, bool):
+            out[key] = value.lower() in ("1", "true", "yes")
+        elif isinstance(default, int):
+            try:
+                out[key] = int(value)
+            except ValueError:
+                continue
+        else:
+            out[key] = value
+    return out
+
+
 def resolve(args, config: dict) -> argparse.Namespace:
-    """Merge the three sources, flags winning over file winning over defaults."""
-    merged = {**DEFAULTS, **config}
+    """Merge the sources: defaults, then environment, then file, then flags."""
+    merged = {**DEFAULTS, **from_environment(), **config}
     for key in CONFIG_KEYS:
         value = getattr(args, key, None)
         if value is not None:
@@ -301,16 +358,51 @@ def main(argv: list[str] | None = None) -> int:
         print(refusal, file=sys.stderr)
         return 2
 
+    import uvicorn
+
+    workers = max(1, int(getattr(settings, "workers", 1) or 1))
+    if workers > 1:
+        # Each worker builds the app for itself, from the environment: uvicorn starts
+        # them by importing a factory, so the command line does not reach them.
+        export_environment(settings)
+        print(
+            f"serving from {workers} processes, one language pipeline each. "
+            "A session belongs to the process that made it, so /v1/anonymize and "
+            "/v1/deanonymize must reach the same worker; the proxy is unaffected.",
+            file=sys.stderr,
+        )
+        uvicorn.run(
+            "pii_shieldd.__main__:app_from_environment",
+            factory=True,
+            host=settings.host,
+            port=settings.port,
+            workers=workers,
+            access_log=False,
+        )
+        return 0
+
     try:
         app = build_app(settings)
     except Exception as exc:
         print(startup_error(exc, settings.language), file=sys.stderr)
         return 1
 
-    import uvicorn
-
     uvicorn.run(app, host=settings.host, port=settings.port, access_log=False)
     return 0
+
+
+def export_environment(settings) -> None:
+    """Put the resolved settings where a worker process will find them."""
+    for key, name in ENV_KEYS.items():
+        value = getattr(settings, key, None)
+        if value is None or value == "":
+            continue
+        os.environ[name] = "1" if value is True else ("0" if value is False else str(value))
+
+
+def app_from_environment():
+    """Build the app in a worker. Its only input is the environment."""
+    return build_app(resolve(build_parser().parse_args([]), {}))
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -277,11 +277,16 @@ class PresidioDetector:
     _UNUSED_COMPONENTS = ("parser", "senter")
 
     def _drop_unused_components(self, engine) -> None:
-        """Strip pipeline components nothing downstream consumes."""
+        """Strip pipeline components nothing downstream consumes, and fix the BLAS."""
+        from .fast_ops import use_platform_blas
+
         pipelines = getattr(engine, "nlp", None)
         pipeline = pipelines.get(self.language) if isinstance(pipelines, dict) else None
         if pipeline is None:
             return
+        switched = use_platform_blas(pipeline)
+        if switched:
+            logger.debug("pii-shield: %d model nodes now use the platform BLAS", switched)
         for name in self._UNUSED_COMPONENTS:
             if name in getattr(pipeline, "pipe_names", ()):
                 try:
