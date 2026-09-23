@@ -68,6 +68,10 @@ _FREE_TEXT_ENTITIES = frozenset({
 # single word is all the detector found.
 _SURNAME_TAIL = re.compile(r"(?:ов|ев|ёв|ин|ын|ск|цк)\w{0,3}$", re.IGNORECASE)
 
+# What reads as a patronymic. A surname that matches this — Мицкевич — would tell the
+# restore that the stand-in is written surname-last when it is not.
+_PATRONYMIC_TAIL = re.compile(r"(?:вич|вн|ичн)[а-яё]{0,3}$", re.IGNORECASE)
+
 _PHONE_ENTITIES = frozenset({
     "PHONE_NUMBER", "RU_PHONE", "CN_PHONE", "JP_PHONE", "KR_PHONE",
 })
@@ -274,23 +278,26 @@ class SurrogateFactory:
             return cls._clean_name(f.name())
         female = looks_female(original)
 
-        def part(draw) -> str:
-            """A part long enough to be recognised when the language declines it.
+        def part(draw, *, patronymic: bool) -> str:
+            """A part long enough to be recognised, and unambiguous about its place.
 
-            A stand-in like "Лука" or "Мир" comes back as "Луку", and four letters are
-            not enough to tell that from the start of some other name — so the restore
-            leaves it alone and the reader is handed an invented person. Drawing again
-            costs nothing; the pool of five-letter-plus names is not short.
+            Two ways a drawn word breaks the round trip. A stand-in like "Лука" comes
+            back as "Луку", and four letters are not enough to tell that from the start
+            of another name, so the restore leaves it alone and the reader is handed an
+            invented person. And a surname like "Мицкевич" reads as a patronymic, which
+            is what tells the restore whether two names are written in the same order —
+            get that wrong and word *i* maps to the wrong word. Drawing again costs
+            nothing; neither pool is short.
             """
             for _ in range(12):
                 value = draw()
-                if len(value) > 4:
+                if len(value) > 4 and bool(_PATRONYMIC_TAIL.search(value)) == patronymic:
                     return value
             return value
 
-        given = part(f.first_name_female if female else f.first_name_male)
-        middle = part(f.middle_name_female if female else f.middle_name_male)
-        family = part(f.last_name_female if female else f.last_name_male)
+        given = part(f.first_name_female if female else f.first_name_male, patronymic=False)
+        middle = part(f.middle_name_female if female else f.middle_name_male, patronymic=True)
+        family = part(f.last_name_female if female else f.last_name_male, patronymic=False)
 
         shape = shape_of(original)
         if shape == "family_initials":
