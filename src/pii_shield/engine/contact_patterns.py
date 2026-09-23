@@ -18,6 +18,7 @@ from __future__ import annotations
 import re
 
 from ..types import Action, Finding
+from .spans import SpanIndex
 
 # Deliberately not the full RFC 5322 grammar, which matches things no mail server
 # would accept. This is the shape addresses are actually written in.
@@ -57,13 +58,12 @@ def scan(text: str, *, entities: set[str] | None = None) -> list[Finding]:
     def wanted(entity: str) -> bool:
         return entities is None or entity in entities
 
-    taken: list[tuple[int, int]] = []
+    taken = SpanIndex()
     found: list[Finding] = []
 
     def claim(entity: str, start: int, end: int, score: float) -> None:
-        if any(start < t_end and t_start < end for t_start, t_end in taken):
+        if not taken.claim(start, end):
             return
-        taken.append((start, end))
         found.append(
             Finding(entity=entity, start=start, end=end, score=score,
                     recognizer=f"contact:{entity.lower()}", action=Action.MASK)

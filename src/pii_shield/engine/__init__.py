@@ -11,6 +11,7 @@ from __future__ import annotations
 from ..types import Finding
 from . import asia_patterns, contact_patterns, finance_patterns, person_patterns, ru_patterns
 from .presidio_engine import NER_ENTITIES, NerUnavailableError, PresidioDetector
+from .spans import SpanIndex
 from .surrogates import SurrogateFactory
 
 __all__ = [
@@ -67,9 +68,10 @@ def merge_findings(*layers: list[Finding]) -> list[Finding]:
     Layers are passed most-authoritative first.
     """
     kept: list[Finding] = []
+    taken = SpanIndex()
     for layer in layers:
         for finding in layer:
-            if any(finding.start < k.end and k.start < finding.end for k in kept):
+            if not taken.claim(finding.start, finding.end):
                 continue
             kept.append(finding)
     kept.sort(key=lambda f: (f.start, f.end))

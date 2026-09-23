@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from ..engine.spans import SpanIndex
 from ..types import Action, Finding
 from .patterns import SECRET_PATTERNS
 
@@ -17,16 +18,15 @@ def scan(text: str, *, entities: set[str] | None = None) -> list[Finding]:
     """
     if not text:
         return []
-    taken: list[tuple[int, int]] = []
+    taken = SpanIndex()
     found: list[Finding] = []
     for entity, pattern, score in SECRET_PATTERNS:
         if entities is not None and entity not in entities:
             continue
         for m in pattern.finditer(text):
             start, end = m.span()
-            if any(start < t_end and t_start < end for t_start, t_end in taken):
+            if not taken.claim(start, end):
                 continue
-            taken.append((start, end))
             found.append(
                 Finding(
                     entity=entity,

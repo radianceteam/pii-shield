@@ -30,6 +30,7 @@ from __future__ import annotations
 import re
 
 from ..types import Action, Finding
+from .spans import SpanIndex
 
 ENTITY = "RU_FULL_NAME"
 
@@ -85,17 +86,15 @@ def scan(text: str, *, entities: set[str] | None = None) -> list[Finding]:
     if not text or (entities is not None and ENTITY not in entities):
         return []
 
-    taken: list[tuple[int, int]] = []
+    taken = SpanIndex()
     found: list[Finding] = []
 
     def claim(pattern: re.Pattern[str], score: float, recognizer: str) -> None:
         for match in pattern.finditer(text):
             start, end = match.span()
-            if any(start < t_end and t_start < end for t_start, t_end in taken):
+            if taken.overlaps(start, end) or _starts_with_role_word(match.group(0)):
                 continue
-            if _starts_with_role_word(match.group(0)):
-                continue
-            taken.append((start, end))
+            taken.add(start, end)
             found.append(
                 Finding(
                     entity=ENTITY, start=start, end=end, score=score,
