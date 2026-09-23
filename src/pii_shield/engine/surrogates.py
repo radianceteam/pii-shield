@@ -238,9 +238,13 @@ class SurrogateFactory:
             return f"<{entity}_{self._bump(entity)}>"
         return pool[self._bump(entity) % len(pool) - 1]
 
-    # Qualifications Faker hangs off a name without a dot to give them away.
+    # What Faker hangs off a name without a dot to give it away. The dotted ones —
+    # "Ing.", "B.Eng.", "Univ.Prof." — are caught by the rule below; these are the
+    # ones that look like words: German "Herr"/"Frau" and Polish "pan"/"pani" head
+    # about one name in forty, and English qualifications trail them.
     _NAME_NOISE = frozenset({
         "md", "dds", "dvm", "phd", "mba", "ii", "iii", "iv", "jr", "sr",
+        "herr", "frau", "pan", "pani", "sir", "madam", "madame", "monsieur",
     })
 
     @classmethod

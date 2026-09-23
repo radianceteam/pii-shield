@@ -102,15 +102,14 @@ def test_a_stand_in_carries_no_title_in_any_locale():
     invented person. Measured against de, en and ru, which decorate with "Ing."/"B.Eng.",
     "Dr."/"MD" and "тов." respectively.
     """
-    for locale in ("de_DE", "en_US", "ru_RU"):
-        for seed in range(40):
+    titles = {"md", "dds", "phd", "jr", "sr", "herr", "frau", "pan", "pani"}
+    for locale in ("de_DE", "en_US", "ru_RU", "pl_PL"):
+        for seed in range(60):
             name = SurrogateFactory(seed=f"s{seed}", locale=locale).make(
                 "PERSON", "Пётр Николаевич Васильев"
             )
             assert "." not in name, (locale, name)
-            assert not any(
-                word.casefold() in {"md", "dds", "phd", "jr", "sr"} for word in name.split()
-            ), (locale, name)
+            assert not (titles & {w.casefold() for w in name.split()}), (locale, name)
 
 
 def test_initials_keep_their_dots():
