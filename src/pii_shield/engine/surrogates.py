@@ -64,6 +64,10 @@ _FREE_TEXT_ENTITIES = frozenset({
     "PERSON", "ORGANIZATION", "LOCATION", "NRP", "EMAIL_ADDRESS", "URL", "RU_FULL_NAME",
 })
 
+# Han, kana and Hangul: the scripts that write a name without spaces in it, where the
+# word-by-word comparison below has nothing to compare.
+_CJK = re.compile(r"[぀-ヿ㐀-䶿一-鿿가-힯]")
+
 # Endings that mark a Russian surname rather than a given name, for the case where a
 # single word is all the detector found.
 _SURNAME_TAIL = re.compile(r"(?:ов|ев|ёв|ин|ын|ск|цк)\w{0,3}$", re.IGNORECASE)
@@ -215,12 +219,35 @@ class SurrogateFactory:
         """
         if candidate == original:
             return True
+        if _CJK.search(original) or _CJK.search(candidate):
+            return cls._shares_characters(candidate, original)
         original_tokens = [t for t in original.split() if len(t) > 2]
         if not original_tokens:
             return False
         return any(
             cls._same_root(c, o) for c in candidate.split() for o in original_tokens
         )
+
+    @staticmethod
+    def _shares_characters(candidate: str, original: str) -> bool:
+        """The same question for a language that does not put spaces between words.
+
+        Neither half of the check above survives the trip: "田中太郎" is one whitespace
+        token, and the stem comparison needs four characters where a Japanese surname
+        has two. A live draw replaced 田中太郎 with 田中 あすか — a different person, the
+        real surname still in the outbound text, and every check passed.
+
+        Two characters side by side are a word here, so a shared pair disqualifies the
+        candidate. The leading character is compared on its own as well, because Korean
+        and Chinese surnames are one character and 김 is a fifth of Korea.
+        """
+        left = "".join(candidate.split())
+        right = "".join(original.split())
+        if not left or not right:
+            return False
+        if left[0] == right[0]:
+            return True
+        return any(right[i:i + 2] in left for i in range(len(right) - 1))
 
     def _bump(self, entity: str) -> int:
         self._counters[entity] = self._counters.get(entity, 0) + 1

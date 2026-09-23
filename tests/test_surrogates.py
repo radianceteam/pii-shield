@@ -116,3 +116,38 @@ def test_initials_keep_their_dots():
     """The cleaner strips abbreviations; a stand-in that *is* initials is not one."""
     name = SurrogateFactory(seed="x", locale="ru_RU").make("RU_FULL_NAME", "Васильев П.Н.")
     assert "." in name, name
+
+
+@pytest.mark.parametrize("candidate,original", [
+    ("田中 あすか", "田中太郎"),      # the live draw: a different person, the real surname
+    ("佐藤 太郎", "田中太郎"),        # shared given name
+    ("김영희", "김철수"),             # one-character Korean surname
+    ("王小明", "王大明"),
+])
+def test_a_name_without_spaces_can_still_leak(candidate, original):
+    assert SurrogateFactory._overlaps(candidate, original)
+
+
+@pytest.mark.parametrize("candidate,original", [
+    ("佐藤 花子", "田中太郎"),
+    ("이영희", "김철수"),
+    ("Anna Schmidt", "田中太郎"),     # nothing shared, different script entirely
+])
+def test_an_unrelated_name_in_those_scripts_is_allowed(candidate, original):
+    assert not SurrogateFactory._overlaps(candidate, original)
+
+
+@pytest.mark.parametrize("locale,original,leak", [
+    ("ja_JP", "田中太郎", "田中"),
+    ("ko_KR", "김철수", "김"),
+])
+def test_a_japanese_or_korean_surname_does_not_survive_the_draw(locale, original, leak):
+    """The whitespace check has nothing to split here and the stem check nothing to stem.
+
+    Found by the suite itself: 田中太郎 drew 田中 あすか, and every guard passed it.
+    """
+    faker = pytest.importorskip("faker")
+    assert faker  # the locale pools come from Faker; the built-in ones are Russian
+    f = SurrogateFactory(seed="s", locale=locale)
+    for _ in range(50):
+        assert leak not in f.make("PERSON", original)
