@@ -119,3 +119,24 @@ def test_the_round_trip_survives_a_declined_answer():
         assert "Петру Николаевичу Васильеву" in restored
         assert first not in restored
         assert stand_in not in restored
+
+
+# --- which language decides that a stand-in can be declined ------------------
+@needs_ru
+def test_an_english_stand_in_in_russian_text_is_not_matched_loosely():
+    """The loose pass matches what was written out, and Latin names do not decline."""
+    policy = Policy.for_language("ru")
+    policy.surrogate_language = "en"
+    shield = Shield(policy)
+    result = shield.anonymize("Позвони Петру Николаевичу Васильеву")
+    assert shield.store.mapping(result.session_id)
+    assert shield.store.inflectable_pairs(result.session_id) == []
+
+
+@needs_ru
+def test_the_request_decides_it_and_not_the_daemon():
+    """A per-request policy carries its own languages, as the tier already does."""
+    shield = Shield(Policy.for_language("en"))
+    ru = Policy.for_language("ru")
+    result = shield.anonymize("Позвони Петру Николаевичу Васильеву", policy=ru)
+    assert shield.store.inflectable_pairs(result.session_id)

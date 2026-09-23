@@ -410,7 +410,7 @@ class Shield:
         out = text
         for finding in sorted(replaceable, key=lambda f: f.start, reverse=True):
             original = text[finding.start : finding.end]
-            replacement = self._replacement(finding, original, sid, factory)
+            replacement = self._replacement(finding, original, sid, factory, pol)
             out = out[: finding.start] + replacement + out[finding.end :]
 
         return AnonymizeResult(
@@ -420,7 +420,12 @@ class Shield:
         )
 
     def _replacement(
-        self, finding: Finding, original: str, session_id: str, factory: SurrogateFactory
+        self,
+        finding: Finding,
+        original: str,
+        session_id: str,
+        factory: SurrogateFactory,
+        pol: Policy,
     ) -> str:
         if finding.action is Action.MASK:
             return f"<{finding.entity}>"
@@ -433,14 +438,26 @@ class Shield:
         if existing is not None:
             return existing
         surrogate = factory.make(finding.entity, original)
-        # Only a free-text name can come back declined; an identifier returns verbatim
-        # or not at all, and must never be matched loosely.
-        inflectable = (
-            finding.entity in _INFLECTABLE_ENTITIES
-            and get_profile(self.policy.language).inflects_names
+        self.store.remember(
+            session_id, original, surrogate, inflectable=self._inflectable(finding.entity, pol)
         )
-        self.store.remember(session_id, original, surrogate, inflectable=inflectable)
         return surrogate
+
+    @staticmethod
+    def _inflectable(entity: str, pol: Policy) -> bool:
+        """Whether this stand-in can come back in another grammatical form.
+
+        The question is about the *stand-in*, not the text it was taken from: the loose
+        restore matches what was written out, so a deployment putting English stand-ins
+        into Russian text has nothing to match loosely. Reading it off the request's
+        policy rather than the server's matters for the same reason the tier does — a
+        request naming its own language must not be answered with the daemon's.
+
+        An identifier is never included: it comes back verbatim or not at all.
+        """
+        if entity not in _INFLECTABLE_ENTITIES:
+            return False
+        return get_profile(pol.surrogate_language or pol.language).inflects_names
 
     # -- deanonymize --------------------------------------------------------
     def deanonymize(self, text: str, session_id: str, *, consume: bool = False) -> str:
