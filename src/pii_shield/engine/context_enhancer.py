@@ -15,6 +15,7 @@ the cost changes, from a quarter of a million comparisons to a dozen.
 
 from __future__ import annotations
 
+import threading
 from bisect import bisect_right
 
 
@@ -31,8 +32,11 @@ def build_context_enhancer():
 
         def __init__(self) -> None:
             super().__init__()
-            self._cached_key: tuple[int, int, int] | None = None
-            self._cached_ends: list[int] = []
+            # Thread-local, because one analyzer serves several chunks of the same
+            # payload at once when detection runs in parallel. A shared slot would
+            # have two threads overwriting each other's index and placing findings in
+            # the wrong text.
+            self._local = threading.local()
 
         def _ends(self, tokens, tokens_indices: list[int]) -> list[int]:
             """Where each token ends, built once per analyzed text.
@@ -43,12 +47,12 @@ def build_context_enhancer():
             """
             last = tokens_indices[-1] if tokens_indices else -1
             key = (id(tokens_indices), len(tokens_indices), last)
-            if key != self._cached_key:
-                self._cached_ends = [
+            if getattr(self._local, "key", None) != key:
+                self._local.ends = [
                     index + len(token) for index, token in zip(tokens_indices, tokens, strict=False)
                 ]
-                self._cached_key = key
-            return self._cached_ends
+                self._local.key = key
+            return self._local.ends
 
         def _find_index_of_match_token(self, word, start, tokens, tokens_indices) -> int:
             # Presidio takes the first token that either begins at `start` or covers

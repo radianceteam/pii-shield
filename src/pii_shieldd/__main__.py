@@ -17,6 +17,7 @@ AUTH_ENV = "PII_SHIELD_TOKEN"
 CONFIG_KEYS = frozenset({
     "host", "port", "language", "surrogate_language", "upstream", "allow_remote",
     "download_models", "pattern_only", "redact_credentials", "cache_analysis",
+    "parallel",
 })
 
 
@@ -78,6 +79,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--parallel",
+        type=int,
+        default=None,
+        help=(
+            "Read a large payload in this many blocks at once. The language model's "
+            "arithmetic happens inside numpy, which releases the interpreter lock, so "
+            "the blocks genuinely overlap. Blocks are split on blank lines, which an "
+            "entity never spans. 0 (the default) reads everything in one pass."
+        ),
+    )
+    parser.add_argument(
         "--download-models",
         action="store_true",
         default=None,
@@ -106,6 +118,7 @@ DEFAULTS = {
     "pattern_only": False,
     "redact_credentials": False,
     "cache_analysis": False,
+    "parallel": 0,
 }
 
 
@@ -212,8 +225,12 @@ def build_app(args):
     if cache:
         print(f"analysis cache: up to {cache} texts remembered", file=sys.stderr)
 
+    parallel = int(getattr(args, "parallel", 0) or os.environ.get("PII_SHIELD_PARALLEL", 0) or 0)
+    if parallel > 1:
+        print(f"parallel analysis: up to {parallel} blocks of a payload at once", file=sys.stderr)
+
     return create_app(
-        Shield(policy, download_models=download, detection_cache=cache),
+        Shield(policy, download_models=download, detection_cache=cache, parallel=parallel),
         proxy_config=proxy_config,
     )
 

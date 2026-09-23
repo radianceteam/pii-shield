@@ -80,3 +80,34 @@ def test_caching_off_by_configuration(size):
     shield = cheap(detection_cache=size)
     shield.detect(TEXT)
     assert len(shield._cache) == 0
+
+
+# --- reading one payload in several blocks ----------------------------------
+LONG = "\n\n".join(
+    f"[{i}] Обработчик проверяет данные. Клиент: Пётр Николаевич Васильев, ИНН 7707083893"
+    for i in range(1, 700)
+)
+
+
+def test_parallel_finds_exactly_what_one_pass_finds():
+    assert len(LONG) > 32 * 1024, "the split only happens on a payload worth splitting"
+    assert spans(cheap(parallel=4).detect(LONG)) == spans(cheap().detect(LONG))
+
+
+def test_offsets_survive_the_split():
+    """A block's findings are reported against the whole payload, not against the block."""
+    for entity, start, end in spans(cheap(parallel=4).detect(LONG)):
+        assert LONG[start:end], (entity, start, end)
+        if entity == "RU_INN":
+            assert LONG[start:end] == "7707083893"
+
+
+def test_a_small_payload_is_not_split():
+    shield = cheap(parallel=4)
+    assert shield._split_for_parallel(TEXT) is None
+    assert shield._executor is None
+
+
+def test_a_payload_without_blank_lines_is_not_split():
+    shield = cheap(parallel=4)
+    assert shield._split_for_parallel("x" * 40_000) is None

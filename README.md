@@ -386,9 +386,33 @@ where the same text arrives repeatedly, which is what an agent does and what a o
 library call does not.
 
 The tier still decides the floor: the pattern-only tier reads 100 KB in 0.06 s and the
-full one in 3.6 s, of which about 2 s is the language model's own arithmetic and cannot
-be optimized away. What the cache changes is that this price is paid once per piece of
-text rather than once per turn.
+full one in 3.6 s, of which about 2 s is the language model's own arithmetic. What the
+cache changes is that this price is paid once per piece of text rather than once per
+turn.
+
+**And that arithmetic can be spread across cores.** It is not a large language model —
+`ru_core_news_lg` is a small convolutional network over word vectors — and it runs inside
+numpy, which releases the interpreter lock while it multiplies. So blocks of one payload
+genuinely overlap in threads, sharing the single loaded pipeline rather than paying for
+another gigabyte each:
+
+```bash
+pii-shieldd --parallel 4 --cache-analysis --upstream https://api.anthropic.com/v1
+```
+
+| 392 KB through the Russian pipeline | |
+|---|---|
+| one pass | 6.85 s |
+| `nlp.pipe` over four blocks | 6.72 s — batching alone buys nothing |
+| two threads | 3.90 s |
+| four threads | 2.58 s |
+| eight threads | 2.04 s |
+
+Blocks are split on blank lines, because an entity never spans one and because what this
+shield reads is already written that way — an agent's turn is a list of messages, a
+document is paragraphs. Measured against the same text read in one pass: 781 findings of
+782 identical, the odd one out a false positive that the split happened to drop. Payloads
+under 32 KB are read in one pass, where threads would cost more than they save.
 
 ### Refusing a credential, or redacting it
 
