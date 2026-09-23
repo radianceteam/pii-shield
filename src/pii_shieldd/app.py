@@ -158,6 +158,14 @@ class DeanonymizeRequest(BaseModel):
 
 class DeanonymizeResponse(BaseModel):
     text: str
+    unrestored: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Stand-ins still visible in the answer: the model changed them past what "
+            "the restore recognises, so what you are reading names somebody who does "
+            "not exist. The values here are the invented ones, never real data."
+        ),
+    )
 
 
 class BlockedResponse(BaseModel):
@@ -279,11 +287,13 @@ def create_app(shield: Shield | None = None, proxy_config=None) -> FastAPI:
     )
     async def deanonymize(req: DeanonymizeRequest, sh: ShieldDep):
         try:
-            return DeanonymizeResponse(
-                text=sh.deanonymize(req.text, req.session_id, consume=req.consume)
-            )
+            mapping = sh.store.mapping(req.session_id)
+            text = sh.deanonymize(req.text, req.session_id, consume=req.consume)
         except UnknownSessionError as exc:
             raise _unknown_session(exc) from exc
+        return DeanonymizeResponse(
+            text=text, unrestored=sh.stand_ins_left_in(text, mapping)
+        )
 
     @app.delete("/v1/session/{session_id}", status_code=204, dependencies=[Depends(require_token)])
     async def drop_session(session_id: str, sh: ShieldDep) -> Response:

@@ -696,4 +696,51 @@ class Shield:
         # wrote. Substituting the exact forms here and asking for the inflected ones
         # afterwards let a stem pattern match a real name that had just been restored
         # and replace it with another word of the same person's name.
-        return restore_inflected(text, pairs, exact=mapping)
+        restored = restore_inflected(text, pairs, exact=mapping)
+
+        left_behind = self.stand_ins_left_in(restored, mapping)
+        if left_behind:
+            # Not an error — the answer is safe either way, and the caller may not care.
+            # But a reader who is handed an invented person deserves to know that is
+            # what happened, and only this side of the round trip can tell.
+            logger.warning(
+                "pii-shield: %d stand-in(s) could not be put back; the answer still "
+                "names somebody who does not exist",
+                len(left_behind),
+            )
+        return restored
+
+    @staticmethod
+    def stand_ins_left_in(text: str, mapping: dict[str, str]) -> list[str]:
+        """Stand-ins from this session still visible in an answer, whole or in part.
+
+        The shield cannot always put a stand-in back: a model may decline it past what
+        the restore recognises, transliterate it into another alphabet, or fold it into
+        an identifier. What it must never do is hand that back as if it were real, so
+        what cannot be restored is at least reported.
+
+        Whole words of five characters or more, because that is what survives a change
+        of grammatical form: "Ларионовау" still begins with "Ларионов". Shorter words
+        are skipped, for the same reason the restore skips them — they collide. The
+        comparison ignores case, because a model folding a name into an identifier
+        writes it in lower case: `owner = феликс_германович_хохлов` is a stand-in that
+        got away, and it does not look like one until the case is taken off.
+
+        What is found here is reported, not repaired. Putting the real name back into
+        that identifier would produce ``owner = Пётр Николаевич Васильев`` — a syntax
+        error where there was working code. The shield's job at that point is to say
+        so, not to make it worse.
+        """
+        if not text or not mapping:
+            return []
+        haystack = text.casefold()
+        left: list[str] = []
+        for stand_in in mapping:
+            if stand_in.casefold() in haystack:
+                left.append(stand_in)
+                continue
+            for word in stand_in.split():
+                if len(word) > 4 and word[:-1].casefold() in haystack:
+                    left.append(stand_in)
+                    break
+        return left

@@ -907,9 +907,27 @@ gender its patronymic announces, no part shorter than five letters (*"Лука"*
 or qualifications — Faker offers *"тов. Некрасова Майя"* and *"Wendy King MD"*, and
 neither is a name.
 
-One limit remains: the stand-in is inserted in the nominative regardless of the case the
-sentence wanted, which leaves the text the model reads slightly ungrammatical. Agreeing
-it with the original would need a morphological generator and is not done today.
+**What cannot be restored is reported.** A model can change a stand-in past anything a
+rule will recognise — fold it into an identifier (`owner = феликс_германович_хохлов`) or
+write it in another alphabet. The shield does not pretend otherwise and does not guess:
+it says so. `/v1/deanonymize` returns the stand-ins that survived in `unrestored`, the
+proxy answers with `X-Pii-Shield-Unrestored: <count>`, and the log carries a warning
+either way. So an answer naming somebody who does not exist is something you can detect
+rather than something you discover later.
+
+It is reported rather than repaired on purpose. Putting the real name back into that
+identifier would produce `owner = Пётр Николаевич Васильев` — a syntax error where there
+was working code. At that point the shield's job is to say what happened, not to make it
+worse.
+
+Two limits remain. The stand-in is inserted in the nominative regardless of the case the
+sentence wanted, which leaves the text the model reads slightly ungrammatical; agreeing
+it with the original would need a morphological generator and is not done today. And a
+stand-in in a different alphabet from the text around it invites the model to
+transliterate it — measured at 8 of 8 when a model was asked to retell a Russian
+sentence containing a German name — after which nothing can match it. That is why
+stand-ins default to the language of the text, and why a deployment reading Russian
+should leave them Russian.
 
 ## Memory
 

@@ -215,10 +215,13 @@ def create_proxy_router(config: ProxyConfig | None = None) -> APIRouter:
             return JSONResponse(status_code=response.status_code, content=_json_or_text(response))
 
         body = _json_or_text(response)
+        headers = {}
         if session_id:
+            mapping = shield.store.mapping(session_id)
             body = deanonymize_response(shield, body, session_id)
+            headers = _unrestored_header(shield, body, mapping)
             _drop(shield, session_id)
-        return JSONResponse(status_code=response.status_code, content=body)
+        return JSONResponse(status_code=response.status_code, content=body, headers=headers)
 
     @router.post("/v1/messages")
     async def anthropic_messages(request: Request, shield: ShieldDep):
@@ -280,10 +283,13 @@ def create_proxy_router(config: ProxyConfig | None = None) -> APIRouter:
             return JSONResponse(status_code=response.status_code, content=_json_or_text(response))
 
         body = _json_or_text(response)
+        headers = {}
         if session_id:
+            mapping = shield.store.mapping(session_id)
             body = anthropic_deanonymize(shield, body, session_id)
+            headers = _unrestored_header(shield, body, mapping)
             _drop(shield, session_id)
-        return JSONResponse(status_code=response.status_code, content=body)
+        return JSONResponse(status_code=response.status_code, content=body, headers=headers)
 
     @router.post("/v1/messages/count_tokens")
     async def anthropic_count_tokens(request: Request, shield: ShieldDep):
@@ -351,6 +357,23 @@ def create_proxy_router(config: ProxyConfig | None = None) -> APIRouter:
         return JSONResponse(status_code=response.status_code, content=_json_or_text(response))
 
     return router
+
+
+def _unrestored_header(shield: Shield, body: Any, mapping: dict[str, str]) -> dict[str, str]:
+    """Tell the client when a stand-in survived into the answer it is about to read.
+
+    The shield cannot always put one back — a model may fold a name into an identifier
+    or write it in another alphabet — and a client that is handed an invented person
+    should at least be able to find out. A count rather than the values, because this
+    travels in a header and a header is logged by everything on the way.
+    """
+    import json as _json
+
+    try:
+        left = shield.stand_ins_left_in(_json.dumps(body, ensure_ascii=False), mapping)
+    except (TypeError, ValueError):  # pragma: no cover - a body that will not serialize
+        return {}
+    return {"x-pii-shield-unrestored": str(len(left))} if left else {}
 
 
 def _json_or_text(response: httpx.Response) -> Any:
