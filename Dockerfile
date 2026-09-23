@@ -37,9 +37,18 @@ print(get_profile('${lang}').model_name('${SPACY_MODEL_SIZE}'))")"; \
 RUN useradd --create-home --uid 10001 shield
 USER shield
 
+# Presidio checks the TLD of every candidate e-mail through tldextract, which keeps
+# the public suffix list in a cache under $HOME. This image is meant to run with a
+# read-only root filesystem (see docker-compose.yml), where that directory cannot be
+# written: each worker logged a warning and re-fetched the list over HTTP at first use.
+# Baking the cache into the image instead does not work and is not merely unhelpful —
+# tldextract takes a lock file beside the cache entry before reading it, so a cache in
+# a read-only place raises rather than warns. The writable tmpfs is the right home for
+# it: the list is fetched once per container start and shared by the workers.
 ENV PII_SHIELD_HOST=0.0.0.0 \
     PII_SHIELD_PORT=8099 \
-    PII_SHIELD_LANGUAGE=ru
+    PII_SHIELD_LANGUAGE=ru \
+    TLDEXTRACT_CACHE=/tmp/tldextract
 
 EXPOSE 8099
 
